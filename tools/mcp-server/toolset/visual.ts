@@ -20,7 +20,7 @@ import { JobFailure } from "../jobs/manager.ts";
 import { isTerminal } from "../jobs/types.ts";
 import { projectDirOf, StepError } from "../testing/common.ts";
 import {
-  approveProjectItem, baselineKeyOf, baselinePng, captureFinal, DEFAULT_TOLERANCE, loadDiffLib, openSceneWait, readBaselines, readHistoryLog, safeSeg,
+  approveProjectItem, baselineKeyOf, baselinePng, captureFinal, loadDiffLib, openSceneWait, readBaselines, readHistoryLog, safeSeg,
 } from "../testing/visualCore.ts";
 import { listBudgetPresets } from "../testing/budgets.ts";
 
@@ -223,4 +223,3 @@ if (ENHANCED && SURFACE !== "legacy") {
   register("dx12_perf_gate", "性能ゲート", PERF_DESC, PERF_SHAPE, runPerf, "perf gate 性能 ゲート 予算 budget フレーム時間 16.6ms GPU p95 回帰 regression ABAB A/B DLSS TAA VRAM");
 }
 
-export { DEFAULT_TOLERANCE };

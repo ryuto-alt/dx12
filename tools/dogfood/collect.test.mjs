@@ -275,5 +275,16 @@ try {
 const allText = fs.readFileSync(path.join(here, "checklists", "w05.json"), "utf8") + fs.readFileSync(path.join(here, "checklists", "w1.json"), "utf8");
 check("チェックリスト全文に実マウス・フォーカスの語が無い", !/SendInput|mouse_event|SetCursorPos|SetForegroundWindow|computer-use|PrintWindow|実マウス/.test(allText));
 
+// [7] G20 は UI テスト vfx_apply_confirm を指す（MCP の仮想入力では確認モーダルが出ない）
+{
+  const g20 = w1.checks?.find?.((c) => c.id === "G20") ?? (Array.isArray(w1) ? w1.find((c) => c.id === "G20") : undefined);
+  const txt = JSON.stringify(g20 ?? {});
+  check("G20 が UI テスト vfx_apply_confirm を指す", /run_ui_tests\.ps1 -Only vfx_apply_confirm/.test(txt), txt.slice(0, 200));
+  check("G20 に MCP の仮想入力・engine 起動が無い", !!g20 && !g20.steps.some((s) => s.kind === "engine" || s.kind === "mcp" || (s.kind === "input" && s.op === "virtual_input")));
+  const prompt = fs.readFileSync(new URL("./AGENT_PROMPT.md", import.meta.url), "utf8");
+  check("AGENT_PROMPT.md が G20 の UI-TEST-RUN 手順を許している", /UI-TEST-RUN/.test(prompt) && /run_ui_tests\.ps1/.test(prompt) && /-Action stop/.test(prompt) && /UI-TEST-RUN/.test(txt));
+  check("G20 の合格基準が終了コード・実出力行・未実行数の注記を含む", /終了コード 0/.test(txt) && /1 run, 0 failed/.test(txt) && /foreground window unchanged/.test(txt) && /not run/.test(txt));
+}
+
 console.log(failed ? `\nFAILED: ${failed}` : "\nall OK");
 process.exitCode = failed ? 1 : 0;

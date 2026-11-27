@@ -1,0 +1,3668 @@
+{
+  "skybox": {
+    "iblIntensity": 0.3,
+    "skyboxIntensity": 0.15,
+    "drawSkybox": true
+  },
+  "entities": [
+    {
+      "name": "Sun",
+      "directionalLight": {
+        "direction": [
+          -0.3,
+          -0.8,
+          0.3
+        ],
+        "color": [
+          1,
+          0.97,
+          0.9
+        ],
+        "intensity": 2,
+        "ambient": 0
+      },
+      "transform": {
+        "position": [
+          0,
+          12,
+          0
+        ],
+        "rotation": [
+          55,
+          -30,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Ground",
+      "primitive": "plane",
+      "primitiveSize": 60,
+      "color": [
+        0.12,
+        0.12,
+        0.13
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.85
+      },
+      "transform": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Chart_0_0",
+      "primitive": "box",
+      "color": [
+        0.04,
+        0.04,
+        0.04
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          -1.4,
+          0.4,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_0_1",
+      "primitive": "box",
+      "color": [
+        0.92,
+        0.92,
+        0.92
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          -0.9999999999999999,
+          0.4,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_0_2",
+      "primitive": "box",
+      "color": [
+        0.04,
+        0.04,
+        0.04
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          -0.5999999999999999,
+          0.4,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_0_3",
+      "primitive": "box",
+      "color": [
+        0.92,
+        0.92,
+        0.92
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          -0.19999999999999973,
+          0.4,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_0_4",
+      "primitive": "box",
+      "color": [
+        0.04,
+        0.04,
+        0.04
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          0.20000000000000018,
+          0.4,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_0_5",
+      "primitive": "box",
+      "color": [
+        0.92,
+        0.92,
+        0.92
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          0.6000000000000001,
+          0.4,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_0_6",
+      "primitive": "box",
+      "color": [
+        0.04,
+        0.04,
+        0.04
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          1.0000000000000004,
+          0.4,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_0_7",
+      "primitive": "box",
+      "color": [
+        0.92,
+        0.92,
+        0.92
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          1.4000000000000004,
+          0.4,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_1_0",
+      "primitive": "box",
+      "color": [
+        0.92,
+        0.92,
+        0.92
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          -1.4,
+          0.8,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_1_1",
+      "primitive": "box",
+      "color": [
+        0.04,
+        0.04,
+        0.04
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          -0.9999999999999999,
+          0.8,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_1_2",
+      "primitive": "box",
+      "color": [
+        0.92,
+        0.92,
+        0.92
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          -0.5999999999999999,
+          0.8,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_1_3",
+      "primitive": "box",
+      "color": [
+        0.04,
+        0.04,
+        0.04
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          -0.19999999999999973,
+          0.8,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_1_4",
+      "primitive": "box",
+      "color": [
+        0.92,
+        0.92,
+        0.92
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          0.20000000000000018,
+          0.8,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_1_5",
+      "primitive": "box",
+      "color": [
+        0.04,
+        0.04,
+        0.04
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          0.6000000000000001,
+          0.8,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_1_6",
+      "primitive": "box",
+      "color": [
+        0.92,
+        0.92,
+        0.92
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          1.0000000000000004,
+          0.8,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_1_7",
+      "primitive": "box",
+      "color": [
+        0.04,
+        0.04,
+        0.04
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          1.4000000000000004,
+          0.8,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_2_0",
+      "primitive": "box",
+      "color": [
+        0.04,
+        0.04,
+        0.04
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          -1.4,
+          1.2000000000000002,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_2_1",
+      "primitive": "box",
+      "color": [
+        0.92,
+        0.92,
+        0.92
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          -0.9999999999999999,
+          1.2000000000000002,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_2_2",
+      "primitive": "box",
+      "color": [
+        0.04,
+        0.04,
+        0.04
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          -0.5999999999999999,
+          1.2000000000000002,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_2_3",
+      "primitive": "box",
+      "color": [
+        0.92,
+        0.92,
+        0.92
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          -0.19999999999999973,
+          1.2000000000000002,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_2_4",
+      "primitive": "box",
+      "color": [
+        0.04,
+        0.04,
+        0.04
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          0.20000000000000018,
+          1.2000000000000002,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_2_5",
+      "primitive": "box",
+      "color": [
+        0.92,
+        0.92,
+        0.92
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          0.6000000000000001,
+          1.2000000000000002,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_2_6",
+      "primitive": "box",
+      "color": [
+        0.04,
+        0.04,
+        0.04
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          1.0000000000000004,
+          1.2000000000000002,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_2_7",
+      "primitive": "box",
+      "color": [
+        0.92,
+        0.92,
+        0.92
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          1.4000000000000004,
+          1.2000000000000002,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_3_0",
+      "primitive": "box",
+      "color": [
+        0.92,
+        0.92,
+        0.92
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          -1.4,
+          1.6,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_3_1",
+      "primitive": "box",
+      "color": [
+        0.04,
+        0.04,
+        0.04
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          -0.9999999999999999,
+          1.6,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_3_2",
+      "primitive": "box",
+      "color": [
+        0.92,
+        0.92,
+        0.92
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          -0.5999999999999999,
+          1.6,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_3_3",
+      "primitive": "box",
+      "color": [
+        0.04,
+        0.04,
+        0.04
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          -0.19999999999999973,
+          1.6,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_3_4",
+      "primitive": "box",
+      "color": [
+        0.92,
+        0.92,
+        0.92
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          0.20000000000000018,
+          1.6,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_3_5",
+      "primitive": "box",
+      "color": [
+        0.04,
+        0.04,
+        0.04
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          0.6000000000000001,
+          1.6,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_3_6",
+      "primitive": "box",
+      "color": [
+        0.92,
+        0.92,
+        0.92
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          1.0000000000000004,
+          1.6,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_3_7",
+      "primitive": "box",
+      "color": [
+        0.04,
+        0.04,
+        0.04
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          1.4000000000000004,
+          1.6,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_4_0",
+      "primitive": "box",
+      "color": [
+        0.04,
+        0.04,
+        0.04
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          -1.4,
+          2,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_4_1",
+      "primitive": "box",
+      "color": [
+        0.92,
+        0.92,
+        0.92
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          -0.9999999999999999,
+          2,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_4_2",
+      "primitive": "box",
+      "color": [
+        0.04,
+        0.04,
+        0.04
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          -0.5999999999999999,
+          2,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_4_3",
+      "primitive": "box",
+      "color": [
+        0.92,
+        0.92,
+        0.92
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          -0.19999999999999973,
+          2,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_4_4",
+      "primitive": "box",
+      "color": [
+        0.04,
+        0.04,
+        0.04
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          0.20000000000000018,
+          2,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_4_5",
+      "primitive": "box",
+      "color": [
+        0.92,
+        0.92,
+        0.92
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          0.6000000000000001,
+          2,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_4_6",
+      "primitive": "box",
+      "color": [
+        0.04,
+        0.04,
+        0.04
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          1.0000000000000004,
+          2,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_4_7",
+      "primitive": "box",
+      "color": [
+        0.92,
+        0.92,
+        0.92
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          1.4000000000000004,
+          2,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_5_0",
+      "primitive": "box",
+      "color": [
+        0.92,
+        0.92,
+        0.92
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          -1.4,
+          2.4,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_5_1",
+      "primitive": "box",
+      "color": [
+        0.04,
+        0.04,
+        0.04
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          -0.9999999999999999,
+          2.4,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_5_2",
+      "primitive": "box",
+      "color": [
+        0.92,
+        0.92,
+        0.92
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          -0.5999999999999999,
+          2.4,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_5_3",
+      "primitive": "box",
+      "color": [
+        0.04,
+        0.04,
+        0.04
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          -0.19999999999999973,
+          2.4,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_5_4",
+      "primitive": "box",
+      "color": [
+        0.92,
+        0.92,
+        0.92
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          0.20000000000000018,
+          2.4,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_5_5",
+      "primitive": "box",
+      "color": [
+        0.04,
+        0.04,
+        0.04
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          0.6000000000000001,
+          2.4,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_5_6",
+      "primitive": "box",
+      "color": [
+        0.92,
+        0.92,
+        0.92
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          1.0000000000000004,
+          2.4,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_5_7",
+      "primitive": "box",
+      "color": [
+        0.04,
+        0.04,
+        0.04
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          1.4000000000000004,
+          2.4,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_6_0",
+      "primitive": "box",
+      "color": [
+        0.04,
+        0.04,
+        0.04
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          -1.4,
+          2.8000000000000003,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_6_1",
+      "primitive": "box",
+      "color": [
+        0.92,
+        0.92,
+        0.92
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          -0.9999999999999999,
+          2.8000000000000003,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_6_2",
+      "primitive": "box",
+      "color": [
+        0.04,
+        0.04,
+        0.04
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          -0.5999999999999999,
+          2.8000000000000003,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_6_3",
+      "primitive": "box",
+      "color": [
+        0.92,
+        0.92,
+        0.92
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          -0.19999999999999973,
+          2.8000000000000003,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_6_4",
+      "primitive": "box",
+      "color": [
+        0.04,
+        0.04,
+        0.04
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          0.20000000000000018,
+          2.8000000000000003,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_6_5",
+      "primitive": "box",
+      "color": [
+        0.92,
+        0.92,
+        0.92
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          0.6000000000000001,
+          2.8000000000000003,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_6_6",
+      "primitive": "box",
+      "color": [
+        0.04,
+        0.04,
+        0.04
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          1.0000000000000004,
+          2.8000000000000003,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_6_7",
+      "primitive": "box",
+      "color": [
+        0.92,
+        0.92,
+        0.92
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          1.4000000000000004,
+          2.8000000000000003,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_7_0",
+      "primitive": "box",
+      "color": [
+        0.92,
+        0.92,
+        0.92
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          -1.4,
+          3.2,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_7_1",
+      "primitive": "box",
+      "color": [
+        0.04,
+        0.04,
+        0.04
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          -0.9999999999999999,
+          3.2,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_7_2",
+      "primitive": "box",
+      "color": [
+        0.92,
+        0.92,
+        0.92
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          -0.5999999999999999,
+          3.2,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_7_3",
+      "primitive": "box",
+      "color": [
+        0.04,
+        0.04,
+        0.04
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          -0.19999999999999973,
+          3.2,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_7_4",
+      "primitive": "box",
+      "color": [
+        0.92,
+        0.92,
+        0.92
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          0.20000000000000018,
+          3.2,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_7_5",
+      "primitive": "box",
+      "color": [
+        0.04,
+        0.04,
+        0.04
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          0.6000000000000001,
+          3.2,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_7_6",
+      "primitive": "box",
+      "color": [
+        0.92,
+        0.92,
+        0.92
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          1.0000000000000004,
+          3.2,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Chart_7_7",
+      "primitive": "box",
+      "color": [
+        0.04,
+        0.04,
+        0.04
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.8
+      },
+      "transform": {
+        "position": [
+          1.4000000000000004,
+          3.2,
+          3
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.4,
+          0.4,
+          0.02
+        ]
+      }
+    },
+    {
+      "name": "Dot_0_0",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          -6,
+          0.6,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_0_1",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          -4.5,
+          0.6,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_0_2",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          -3,
+          0.6,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_0_3",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          -1.5,
+          0.6,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_0_4",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          0,
+          0.6,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_0_5",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          1.5,
+          0.6,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_0_6",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          3,
+          0.6,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_0_7",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          4.5,
+          0.6,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_0_8",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          6,
+          0.6,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_1_0",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          -6,
+          1.7000000000000002,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_1_1",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          -4.5,
+          1.7000000000000002,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_1_2",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          -3,
+          1.7000000000000002,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_1_3",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          -1.5,
+          1.7000000000000002,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_1_4",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          0,
+          1.7000000000000002,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_1_5",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          1.5,
+          1.7000000000000002,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_1_6",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          3,
+          1.7000000000000002,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_1_7",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          4.5,
+          1.7000000000000002,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_1_8",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          6,
+          1.7000000000000002,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_2_0",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          -6,
+          2.8000000000000003,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_2_1",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          -4.5,
+          2.8000000000000003,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_2_2",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          -3,
+          2.8000000000000003,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_2_3",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          -1.5,
+          2.8000000000000003,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_2_4",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          0,
+          2.8000000000000003,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_2_5",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          1.5,
+          2.8000000000000003,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_2_6",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          3,
+          2.8000000000000003,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_2_7",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          4.5,
+          2.8000000000000003,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_2_8",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          6,
+          2.8000000000000003,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_3_0",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          -6,
+          3.9000000000000004,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_3_1",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          -4.5,
+          3.9000000000000004,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_3_2",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          -3,
+          3.9000000000000004,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_3_3",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          -1.5,
+          3.9000000000000004,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_3_4",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          0,
+          3.9000000000000004,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_3_5",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          1.5,
+          3.9000000000000004,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_3_6",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          3,
+          3.9000000000000004,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_3_7",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          4.5,
+          3.9000000000000004,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_3_8",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          6,
+          3.9000000000000004,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_4_0",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          -6,
+          5,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_4_1",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          -4.5,
+          5,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_4_2",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          -3,
+          5,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_4_3",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          -1.5,
+          5,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_4_4",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          0,
+          5,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_4_5",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          1.5,
+          5,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_4_6",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          3,
+          5,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_4_7",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          4.5,
+          5,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    },
+    {
+      "name": "Dot_4_8",
+      "primitive": "sphere",
+      "primitiveSize": 0.05,
+      "color": [
+        0.02,
+        0.02,
+        0.02
+      ],
+      "material": {
+        "metallic": 0,
+        "roughness": 0.5,
+        "emissiveColor": [
+          1,
+          0.95,
+          0.85
+        ],
+        "emissiveIntensity": 60
+      },
+      "transform": {
+        "position": [
+          6,
+          5,
+          12
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    }
+  ],
+  "shadows": true,
+  "postProcess": {
+    "enabled": true,
+    "dofOn": true,
+    "dofFocusDist": 6,
+    "dofBlurSize": 12,
+    "dofAperture": 1,
+    "dofFocalLength": 85
+  }
+}

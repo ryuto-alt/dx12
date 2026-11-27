@@ -1,0 +1,22 @@
+{
+  "name": "taa_torture",
+  "project": "tests/golden/projects/post_image",
+  "scene": "scenes/taa_torture.json",
+  "camera": {
+    "position": [
+      0,
+      1.6,
+      -5
+    ],
+    "target": [
+      0,
+      1.1,
+      1
+    ]
+  },
+  "note": "回る細い柵・高速パーティクル・発光の火花・サブピクセルの縞（TAA の残光とちらつき）。火花（パーティクル）は乱数で毎回少し違うので、差画素の許容だけ広げる",
+  "tolerance": {
+    "maxDiffRatio": 0.006,
+    "maxMeanAbs": 0.2
+  }
+}

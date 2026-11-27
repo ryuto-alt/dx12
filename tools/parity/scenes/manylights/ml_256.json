@@ -1,0 +1,6928 @@
+{
+ "id": "ML-256",
+ "title": "ML-256 多灯の中庭と回廊(256 灯)",
+ "description": "24x24m の屋根付き中庭と、そこから伸びる 30m の回廊。点光源 256 灯(回廊 64 + 中庭 192)。太陽は 0・全灯 castShadows なし。SPK-1(ReSTIR DI / SHaRC の計測)の基準シーン。PT が正解、現行ラスタ(影なし総当たり)が基準線。",
+ "spec": {
+  "version": 1,
+  "name": "ml_256",
+  "verify": false,
+  "entities": [
+   {
+    "name": "LVL_Floor_00",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -6.0,
+     -0.1,
+     -6.0
+    ],
+    "size": [
+     12.0,
+     0.2,
+     12.0
+    ],
+    "color": "#8d877c",
+    "material": {
+     "roughness": 0.55
+    }
+   },
+   {
+    "name": "LVL_Roof_00",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -6.0,
+     6.1,
+     -6.0
+    ],
+    "size": [
+     12.0,
+     0.2,
+     12.0
+    ],
+    "color": "#4a463f",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Floor_01",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -6.0,
+     -0.1,
+     6.0
+    ],
+    "size": [
+     12.0,
+     0.2,
+     12.0
+    ],
+    "color": "#8d877c",
+    "material": {
+     "roughness": 0.55
+    }
+   },
+   {
+    "name": "LVL_Roof_01",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -6.0,
+     6.1,
+     6.0
+    ],
+    "size": [
+     12.0,
+     0.2,
+     12.0
+    ],
+    "color": "#4a463f",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Floor_10",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     6.0,
+     -0.1,
+     -6.0
+    ],
+    "size": [
+     12.0,
+     0.2,
+     12.0
+    ],
+    "color": "#8d877c",
+    "material": {
+     "roughness": 0.55
+    }
+   },
+   {
+    "name": "LVL_Roof_10",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     6.0,
+     6.1,
+     -6.0
+    ],
+    "size": [
+     12.0,
+     0.2,
+     12.0
+    ],
+    "color": "#4a463f",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Floor_11",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     6.0,
+     -0.1,
+     6.0
+    ],
+    "size": [
+     12.0,
+     0.2,
+     12.0
+    ],
+    "color": "#8d877c",
+    "material": {
+     "roughness": 0.55
+    }
+   },
+   {
+    "name": "LVL_Roof_11",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     6.0,
+     6.1,
+     6.0
+    ],
+    "size": [
+     12.0,
+     0.2,
+     12.0
+    ],
+    "color": "#4a463f",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_N",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     3.0,
+     12.1
+    ],
+    "size": [
+     24.4,
+     6.0,
+     0.2
+    ],
+    "color": "#cfc9bd",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_E",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     12.1,
+     3.0,
+     0
+    ],
+    "size": [
+     0.2,
+     6.0,
+     24.4
+    ],
+    "color": "#cfc9bd",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_W",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -12.1,
+     3.0,
+     0
+    ],
+    "size": [
+     0.2,
+     6.0,
+     24.4
+    ],
+    "color": "#cfc9bd",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_S_L",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -7.0,
+     3.0,
+     -12.1
+    ],
+    "size": [
+     10.2,
+     6.0,
+     0.2
+    ],
+    "color": "#cfc9bd",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_S_R",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     7.0,
+     3.0,
+     -12.1
+    ],
+    "size": [
+     10.2,
+     6.0,
+     0.2
+    ],
+    "color": "#cfc9bd",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Wall_S_Top",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     4.6,
+     -12.1
+    ],
+    "size": [
+     4.0,
+     2.8,
+     0.2
+    ],
+    "color": "#cfc9bd",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Corr_Floor",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     -0.1,
+     -27.0
+    ],
+    "size": [
+     4.4,
+     0.2,
+     30.0
+    ],
+    "color": "#6e675c",
+    "material": {
+     "roughness": 0.4
+    }
+   },
+   {
+    "name": "LVL_Corr_Ceiling",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     3.3000000000000003,
+     -27.0
+    ],
+    "size": [
+     4.4,
+     0.2,
+     30.0
+    ],
+    "color": "#4a463f",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Corr_Wall_L",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -2.1,
+     1.6,
+     -27.0
+    ],
+    "size": [
+     0.2,
+     3.2,
+     30.0
+    ],
+    "color": "#cfc9bd",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Corr_Wall_R",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     2.1,
+     1.6,
+     -27.0
+    ],
+    "size": [
+     0.2,
+     3.2,
+     30.0
+    ],
+    "color": "#cfc9bd",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "LVL_Corr_Wall_End",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     1.6,
+     -42.1
+    ],
+    "size": [
+     4.4,
+     3.2,
+     0.2
+    ],
+    "color": "#cfc9bd",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "ENV_Corr_Pier_0L",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -1.75,
+     1.6,
+     -18.0
+    ],
+    "size": [
+     0.5,
+     3.2,
+     0.6
+    ],
+    "color": "#8d877c",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "ENV_Corr_Pier_0R",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     1.75,
+     1.6,
+     -18.0
+    ],
+    "size": [
+     0.5,
+     3.2,
+     0.6
+    ],
+    "color": "#8d877c",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "ENV_Corr_Pier_1L",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -1.75,
+     1.6,
+     -26.0
+    ],
+    "size": [
+     0.5,
+     3.2,
+     0.6
+    ],
+    "color": "#8d877c",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "ENV_Corr_Pier_1R",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     1.75,
+     1.6,
+     -26.0
+    ],
+    "size": [
+     0.5,
+     3.2,
+     0.6
+    ],
+    "color": "#8d877c",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "ENV_Corr_Pier_2L",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -1.75,
+     1.6,
+     -34.0
+    ],
+    "size": [
+     0.5,
+     3.2,
+     0.6
+    ],
+    "color": "#8d877c",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "ENV_Corr_Pier_2R",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     1.75,
+     1.6,
+     -34.0
+    ],
+    "size": [
+     0.5,
+     3.2,
+     0.6
+    ],
+    "color": "#8d877c",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "ENV_Pillar_0",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -7,
+     3.0,
+     -7
+    ],
+    "size": [
+     1.0,
+     6.0,
+     1.0
+    ],
+    "color": "#cfc9bd",
+    "material": {
+     "roughness": 0.8
+    }
+   },
+   {
+    "name": "ENV_Pillar_1",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     3.0,
+     -7
+    ],
+    "size": [
+     1.0,
+     6.0,
+     1.0
+    ],
+    "color": "#cfc9bd",
+    "material": {
+     "roughness": 0.8
+    }
+   },
+   {
+    "name": "ENV_Pillar_2",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     7,
+     3.0,
+     -7
+    ],
+    "size": [
+     1.0,
+     6.0,
+     1.0
+    ],
+    "color": "#cfc9bd",
+    "material": {
+     "roughness": 0.8
+    }
+   },
+   {
+    "name": "ENV_Pillar_3",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -7,
+     3.0,
+     0
+    ],
+    "size": [
+     1.0,
+     6.0,
+     1.0
+    ],
+    "color": "#cfc9bd",
+    "material": {
+     "roughness": 0.8
+    }
+   },
+   {
+    "name": "ENV_Pillar_4",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     7,
+     3.0,
+     0
+    ],
+    "size": [
+     1.0,
+     6.0,
+     1.0
+    ],
+    "color": "#cfc9bd",
+    "material": {
+     "roughness": 0.8
+    }
+   },
+   {
+    "name": "ENV_Pillar_5",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -7,
+     3.0,
+     7
+    ],
+    "size": [
+     1.0,
+     6.0,
+     1.0
+    ],
+    "color": "#cfc9bd",
+    "material": {
+     "roughness": 0.8
+    }
+   },
+   {
+    "name": "ENV_Pillar_6",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     3.0,
+     7
+    ],
+    "size": [
+     1.0,
+     6.0,
+     1.0
+    ],
+    "color": "#cfc9bd",
+    "material": {
+     "roughness": 0.8
+    }
+   },
+   {
+    "name": "ENV_Pillar_7",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     7,
+     3.0,
+     7
+    ],
+    "size": [
+     1.0,
+     6.0,
+     1.0
+    ],
+    "color": "#cfc9bd",
+    "material": {
+     "roughness": 0.8
+    }
+   },
+   {
+    "name": "ENV_Dais",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     0.2,
+     0
+    ],
+    "size": [
+     6.0,
+     0.4,
+     6.0
+    ],
+    "color": "#a09a8e",
+    "material": {
+     "roughness": 0.5
+    }
+   },
+   {
+    "name": "ENV_LowWall_A",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -3.5,
+     0.6,
+     3.5
+    ],
+    "size": [
+     0.3,
+     1.2,
+     6.0
+    ],
+    "color": "#cfc9bd",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "ENV_LowWall_B",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     3.5,
+     0.6,
+     -3.5
+    ],
+    "size": [
+     0.3,
+     1.2,
+     6.0
+    ],
+    "color": "#cfc9bd",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "ENV_LowWall_C",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     0,
+     0.6,
+     9.0
+    ],
+    "size": [
+     8.0,
+     1.2,
+     0.3
+    ],
+    "color": "#cfc9bd",
+    "material": {
+     "roughness": 0.9
+    }
+   },
+   {
+    "name": "ENV_Planter_0",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -10,
+     0.4,
+     4
+    ],
+    "size": [
+     2.0,
+     0.8,
+     1.0
+    ],
+    "color": "#6a5a46",
+    "material": {
+     "roughness": 0.8
+    }
+   },
+   {
+    "name": "ENV_Planter_1",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -10,
+     0.4,
+     -4
+    ],
+    "size": [
+     2.0,
+     0.8,
+     1.0
+    ],
+    "color": "#6a5a46",
+    "material": {
+     "roughness": 0.8
+    }
+   },
+   {
+    "name": "ENV_Planter_2",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     10,
+     0.4,
+     4
+    ],
+    "size": [
+     2.0,
+     0.8,
+     1.0
+    ],
+    "color": "#6a5a46",
+    "material": {
+     "roughness": 0.8
+    }
+   },
+   {
+    "name": "ENV_Planter_3",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     10,
+     0.4,
+     -4
+    ],
+    "size": [
+     2.0,
+     0.8,
+     1.0
+    ],
+    "color": "#6a5a46",
+    "material": {
+     "roughness": 0.8
+    }
+   },
+   {
+    "name": "ENV_Planter_4",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     -4,
+     0.4,
+     10
+    ],
+    "size": [
+     2.0,
+     0.8,
+     1.0
+    ],
+    "color": "#6a5a46",
+    "material": {
+     "roughness": 0.8
+    }
+   },
+   {
+    "name": "ENV_Planter_5",
+    "kind": "box",
+    "group": "LVL",
+    "at": [
+     4,
+     0.4,
+     10
+    ],
+    "size": [
+     2.0,
+     0.8,
+     1.0
+    ],
+    "color": "#6a5a46",
+    "material": {
+     "roughness": 0.8
+    }
+   },
+   {
+    "name": "ENV_Orb_A",
+    "kind": "sphere",
+    "group": "ENV",
+    "at": [
+     -1.2,
+     1.4,
+     0.0
+    ],
+    "size": 1.0,
+    "color": "#d8d8d8",
+    "material": {
+     "roughness": 0.12
+    }
+   },
+   {
+    "name": "ENV_Orb_B",
+    "kind": "sphere",
+    "group": "ENV",
+    "at": [
+     1.2,
+     1.4,
+     0.5
+    ],
+    "size": 1.0,
+    "color": "#c8a060",
+    "material": {
+     "roughness": 0.4,
+     "metallic": 1.0
+    }
+   },
+   {
+    "name": "LGT_Corr_0_00",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.8,
+     2.9000000000000004,
+     -13.244
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_0_01",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.8,
+     2.9000000000000004,
+     -14.131
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_0_02",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.8,
+     2.9000000000000004,
+     -15.019
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_0_03",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.8,
+     2.9000000000000004,
+     -15.906
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_0_04",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.8,
+     2.9000000000000004,
+     -16.794
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_0_05",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.8,
+     2.9000000000000004,
+     -17.681
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_0_06",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.8,
+     2.9000000000000004,
+     -18.569
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_0_07",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.8,
+     2.9000000000000004,
+     -19.456
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_0_08",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.8,
+     2.9000000000000004,
+     -20.344
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_0_09",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.8,
+     2.9000000000000004,
+     -21.231
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_0_10",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.8,
+     2.9000000000000004,
+     -22.119
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_0_11",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.8,
+     2.9000000000000004,
+     -23.006
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_0_12",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.8,
+     2.9000000000000004,
+     -23.894
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_0_13",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.8,
+     2.9000000000000004,
+     -24.781
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_0_14",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.8,
+     2.9000000000000004,
+     -25.669
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_0_15",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.8,
+     2.9000000000000004,
+     -26.556
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_0_16",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.8,
+     2.9000000000000004,
+     -27.444
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_0_17",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.8,
+     2.9000000000000004,
+     -28.331
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_0_18",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.8,
+     2.9000000000000004,
+     -29.219
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_0_19",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.8,
+     2.9000000000000004,
+     -30.106
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_0_20",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.8,
+     2.9000000000000004,
+     -30.994
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_0_21",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.8,
+     2.9000000000000004,
+     -31.881
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_0_22",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.8,
+     2.9000000000000004,
+     -32.769
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_0_23",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.8,
+     2.9000000000000004,
+     -33.656
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_0_24",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.8,
+     2.9000000000000004,
+     -34.544
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_0_25",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.8,
+     2.9000000000000004,
+     -35.431
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_0_26",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.8,
+     2.9000000000000004,
+     -36.319
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_0_27",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.8,
+     2.9000000000000004,
+     -37.206
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_0_28",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.8,
+     2.9000000000000004,
+     -38.094
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_0_29",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.8,
+     2.9000000000000004,
+     -38.981
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_0_30",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.8,
+     2.9000000000000004,
+     -39.869
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_0_31",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.8,
+     2.9000000000000004,
+     -40.756
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_1_00",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.8,
+     2.9000000000000004,
+     -13.244
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_1_01",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.8,
+     2.9000000000000004,
+     -14.131
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_1_02",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.8,
+     2.9000000000000004,
+     -15.019
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_1_03",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.8,
+     2.9000000000000004,
+     -15.906
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_1_04",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.8,
+     2.9000000000000004,
+     -16.794
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_1_05",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.8,
+     2.9000000000000004,
+     -17.681
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_1_06",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.8,
+     2.9000000000000004,
+     -18.569
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_1_07",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.8,
+     2.9000000000000004,
+     -19.456
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_1_08",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.8,
+     2.9000000000000004,
+     -20.344
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_1_09",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.8,
+     2.9000000000000004,
+     -21.231
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_1_10",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.8,
+     2.9000000000000004,
+     -22.119
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_1_11",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.8,
+     2.9000000000000004,
+     -23.006
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_1_12",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.8,
+     2.9000000000000004,
+     -23.894
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_1_13",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.8,
+     2.9000000000000004,
+     -24.781
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_1_14",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.8,
+     2.9000000000000004,
+     -25.669
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_1_15",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.8,
+     2.9000000000000004,
+     -26.556
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_1_16",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.8,
+     2.9000000000000004,
+     -27.444
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_1_17",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.8,
+     2.9000000000000004,
+     -28.331
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_1_18",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.8,
+     2.9000000000000004,
+     -29.219
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_1_19",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.8,
+     2.9000000000000004,
+     -30.106
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_1_20",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.8,
+     2.9000000000000004,
+     -30.994
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_1_21",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.8,
+     2.9000000000000004,
+     -31.881
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_1_22",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.8,
+     2.9000000000000004,
+     -32.769
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_1_23",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.8,
+     2.9000000000000004,
+     -33.656
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_1_24",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.8,
+     2.9000000000000004,
+     -34.544
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_1_25",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.8,
+     2.9000000000000004,
+     -35.431
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_1_26",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.8,
+     2.9000000000000004,
+     -36.319
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_1_27",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.8,
+     2.9000000000000004,
+     -37.206
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_1_28",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.8,
+     2.9000000000000004,
+     -38.094
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_1_29",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.8,
+     2.9000000000000004,
+     -38.981
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_1_30",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.8,
+     2.9000000000000004,
+     -39.869
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Corr_1_31",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.8,
+     2.9000000000000004,
+     -40.756
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 3.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_000",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -10.161,
+     4.671,
+     -10.69
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_001",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -9.943,
+     3.532,
+     -8.182
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       0.45,
+       0.65,
+       1.0
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_002",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -9.978,
+     4.083,
+     -6.853
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_003",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -9.985,
+     1.138,
+     -5.893
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_004",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -10.3,
+     2.823,
+     -4.008
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_005",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -9.684,
+     2.05,
+     -2.066
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_006",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -10.321,
+     4.335,
+     -1.289
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_007",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -10.031,
+     4.71,
+     0.501
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_008",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -9.819,
+     3.694,
+     2.212
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_009",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -10.425,
+     2.902,
+     5.908
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_010",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -10.7,
+     4.091,
+     7.387
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_011",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -10.156,
+     1.542,
+     8.732
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_012",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -10.641,
+     1.059,
+     10.406
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_013",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -8.765,
+     3.249,
+     -10.172
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_014",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -8.519,
+     1.857,
+     -9.053
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       0.45,
+       0.65,
+       1.0
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_015",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -8.152,
+     1.354,
+     -6.528
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_016",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -8.585,
+     3.335,
+     -5.372
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_017",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -8.303,
+     3.353,
+     -4.432
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_018",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -8.296,
+     3.402,
+     -2.644
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_019",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -8.983,
+     3.284,
+     -0.819
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_020",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -8.975,
+     3.281,
+     0.678
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_021",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -9.033,
+     1.432,
+     2.474
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_022",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -8.578,
+     2.624,
+     3.639
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_023",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -8.676,
+     1.665,
+     5.711
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_024",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -8.91,
+     4.371,
+     7.555
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_025",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -8.3,
+     3.796,
+     8.784
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_026",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -8.93,
+     3.789,
+     10.764
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_027",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -6.738,
+     2.688,
+     -10.048
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_028",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -7.156,
+     1.739,
+     -8.875
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_029",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.61,
+     4.156,
+     5.439
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_030",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -6.99,
+     1.941,
+     -5.165
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_031",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -6.577,
+     1.76,
+     -4.39
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_032",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -7.363,
+     3.275,
+     -2.098
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_033",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -6.733,
+     2.563,
+     -1.198
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_034",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -6.681,
+     2.719,
+     0.863
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_035",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -7.043,
+     3.032,
+     2.779
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_036",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -7.572,
+     1.627,
+     3.624
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_037",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -6.627,
+     1.729,
+     5.033
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_038",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     10.054,
+     2.602,
+     8.198
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_039",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -6.848,
+     1.311,
+     9.0
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_040",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -6.909,
+     2.318,
+     10.301
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_041",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -5.787,
+     2.857,
+     -9.927
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_042",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -5.165,
+     3.142,
+     -8.374
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_043",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -5.8,
+     3.139,
+     -6.686
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_044",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -5.81,
+     2.077,
+     -5.402
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       0.45,
+       0.65,
+       1.0
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_045",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -5.978,
+     1.953,
+     -4.205
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_046",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -5.566,
+     4.406,
+     -2.668
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       0.45,
+       0.65,
+       1.0
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_047",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -5.012,
+     2.1,
+     -1.011
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_048",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -4.996,
+     4.0,
+     0.654
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_049",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -5.464,
+     2.717,
+     2.659
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_050",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -5.765,
+     2.499,
+     4.172
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_051",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -5.874,
+     3.462,
+     5.137
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_052",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -5.114,
+     3.015,
+     7.398
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_053",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -5.03,
+     3.437,
+     8.376
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_054",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -5.671,
+     2.863,
+     9.666
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       0.45,
+       0.65,
+       1.0
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_055",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -4.184,
+     2.951,
+     -10.673
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_056",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -3.447,
+     1.833,
+     -8.998
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_057",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -4.173,
+     3.782,
+     -7.031
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_058",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -3.89,
+     1.766,
+     -4.994
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_059",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -3.555,
+     1.015,
+     -3.992
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_060",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -3.591,
+     4.215,
+     -2.801
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       0.45,
+       0.65,
+       1.0
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_061",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -4.4,
+     2.894,
+     -0.799
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_062",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -4.472,
+     2.851,
+     1.066
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_063",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -3.467,
+     1.541,
+     2.9
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_064",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -4.3,
+     1.79,
+     4.025
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_065",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -3.757,
+     2.152,
+     7.598
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_066",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -4.293,
+     4.045,
+     9.187
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_067",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -3.645,
+     2.759,
+     9.803
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_068",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -2.414,
+     1.913,
+     -9.805
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_069",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -1.968,
+     3.908,
+     -8.503
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_070",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -2.673,
+     2.056,
+     -7.26
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_071",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -2.283,
+     4.604,
+     -5.801
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_072",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -2.183,
+     3.842,
+     -4.384
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_073",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -2.883,
+     2.597,
+     -2.199
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       0.45,
+       0.65,
+       1.0
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_074",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -2.877,
+     4.368,
+     -0.806
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_075",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -1.892,
+     2.906,
+     2.627
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_076",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -2.395,
+     3.765,
+     3.539
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_077",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -2.373,
+     2.129,
+     5.142
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_078",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -2.711,
+     2.042,
+     7.305
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       0.45,
+       0.65,
+       1.0
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_079",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -2.755,
+     3.599,
+     8.318
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_080",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -2.791,
+     2.955,
+     10.633
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_081",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.433,
+     2.224,
+     -9.674
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_082",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.662,
+     1.112,
+     -9.048
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_083",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -1.293,
+     2.671,
+     -6.745
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_084",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.854,
+     2.213,
+     -5.013
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_085",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -1.044,
+     4.703,
+     -3.84
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       0.45,
+       0.65,
+       1.0
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_086",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.533,
+     2.012,
+     -2.7
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_087",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -1.173,
+     4.419,
+     -1.188
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_088",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.767,
+     3.071,
+     0.618
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_089",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.883,
+     1.929,
+     2.707
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_090",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.947,
+     2.665,
+     3.967
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_091",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.775,
+     1.901,
+     5.26
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_092",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -1.319,
+     2.068,
+     6.864
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_093",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -0.516,
+     1.549,
+     8.615
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_094",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -1.02,
+     3.748,
+     10.444
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_095",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.268,
+     2.357,
+     -9.887
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_096",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.862,
+     1.776,
+     -8.802
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_097",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     1.229,
+     2.553,
+     -6.609
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_098",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     1.206,
+     1.115,
+     -5.652
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_099",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.347,
+     1.95,
+     -3.692
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_100",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     1.065,
+     4.59,
+     -2.791
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_101",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.395,
+     1.803,
+     -0.491
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_102",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.291,
+     1.966,
+     0.72
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_103",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     1.251,
+     2.17,
+     2.788
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_104",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     1.146,
+     1.999,
+     3.982
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_105",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     1.132,
+     4.206,
+     5.394
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_106",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     1.047,
+     3.742,
+     7.246
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       0.45,
+       0.65,
+       1.0
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_107",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     1.299,
+     2.155,
+     9.155
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_108",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.257,
+     1.544,
+     10.479
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_109",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     2.614,
+     1.626,
+     -9.966
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_110",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     2.355,
+     2.011,
+     -9.014
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_111",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     2.532,
+     4.351,
+     -7.368
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       0.45,
+       0.65,
+       1.0
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_112",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     2.146,
+     1.751,
+     -5.758
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       0.45,
+       0.65,
+       1.0
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_113",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     2.799,
+     3.215,
+     -3.845
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_114",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     2.314,
+     2.566,
+     -1.998
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_115",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     2.001,
+     1.079,
+     -0.472
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_116",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     2.478,
+     1.241,
+     0.759
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_117",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     2.719,
+     1.395,
+     2.634
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_118",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     2.562,
+     4.528,
+     3.523
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_119",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     2.498,
+     3.475,
+     5.303
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_120",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     2.445,
+     3.837,
+     7.476
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_121",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     2.481,
+     4.226,
+     8.208
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_122",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     2.721,
+     1.739,
+     10.448
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       0.45,
+       0.65,
+       1.0
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_123",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     4.431,
+     2.616,
+     -10.312
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_124",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     4.098,
+     1.63,
+     -8.185
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_125",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     3.783,
+     2.26,
+     -7.452
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_126",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     4.128,
+     2.845,
+     -5.459
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_127",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     3.725,
+     4.296,
+     -4.203
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_128",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     3.818,
+     4.408,
+     -2.556
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_129",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     4.438,
+     2.577,
+     -1.245
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       0.45,
+       0.65,
+       1.0
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_130",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     3.49,
+     3.596,
+     0.519
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       0.45,
+       0.65,
+       1.0
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_131",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     3.969,
+     4.778,
+     2.267
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_132",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     4.098,
+     2.2,
+     4.091
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_133",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     3.627,
+     1.711,
+     5.083
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_134",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     3.542,
+     4.485,
+     6.901
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_135",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     3.416,
+     4.307,
+     8.925
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_136",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     3.682,
+     1.412,
+     10.166
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_137",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     5.728,
+     2.753,
+     -9.898
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_138",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     5.802,
+     4.136,
+     -9.093
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_139",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     5.446,
+     3.163,
+     -6.914
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_140",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     5.974,
+     2.224,
+     -5.03
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_141",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     5.825,
+     4.5,
+     -4.41
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_142",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     5.282,
+     2.301,
+     -1.825
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_143",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     5.873,
+     1.368,
+     -1.154
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       0.45,
+       0.65,
+       1.0
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_144",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     5.391,
+     1.584,
+     0.501
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_145",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     5.18,
+     2.718,
+     2.427
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_146",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     5.881,
+     1.674,
+     3.924
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_147",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     5.633,
+     3.822,
+     5.748
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_148",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     5.117,
+     4.362,
+     8.839
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_149",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     5.053,
+     4.755,
+     10.324
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_150",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     6.719,
+     2.321,
+     -10.746
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_151",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     7.083,
+     4.125,
+     -8.352
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_152",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     -2.652,
+     4.397,
+     6.791
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_153",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     7.125,
+     3.062,
+     -5.693
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_154",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     6.565,
+     4.215,
+     -3.561
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       0.45,
+       0.65,
+       1.0
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_155",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     6.625,
+     1.518,
+     -2.307
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_156",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     6.793,
+     1.579,
+     -0.867
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_157",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     6.743,
+     2.859,
+     1.108
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_158",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     7.354,
+     4.542,
+     2.117
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_159",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     6.625,
+     3.034,
+     3.906
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_160",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     6.549,
+     3.15,
+     5.998
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       0.45,
+       0.65,
+       1.0
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_161",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     0.468,
+     2.592,
+     8.82
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_162",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     6.894,
+     2.369,
+     8.292
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_163",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     6.731,
+     4.516,
+     10.565
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_164",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     9.016,
+     2.851,
+     -9.931
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_165",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     8.733,
+     3.777,
+     -8.433
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_166",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     8.487,
+     3.949,
+     -7.45
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_167",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     8.487,
+     1.352,
+     -5.766
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_168",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     8.662,
+     3.548,
+     -4.034
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_169",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     8.172,
+     2.212,
+     -2.891
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_170",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     8.147,
+     4.364,
+     -0.979
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_171",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     8.173,
+     1.083,
+     1.106
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       0.45,
+       0.65,
+       1.0
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_172",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     8.273,
+     1.045,
+     2.777
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_173",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     8.704,
+     3.647,
+     4.089
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_174",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     8.175,
+     1.326,
+     6.048
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       0.45,
+       0.65,
+       1.0
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_175",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     8.908,
+     3.195,
+     7.041
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       0.45,
+       0.65,
+       1.0
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_176",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     8.485,
+     2.199,
+     8.798
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_177",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     9.045,
+     4.568,
+     10.181
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_178",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     10.555,
+     1.331,
+     -9.67
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       0.45,
+       0.65,
+       1.0
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_179",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     10.316,
+     2.251,
+     -8.165
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_180",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     10.449,
+     1.512,
+     -6.77
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_181",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     10.679,
+     1.531,
+     -5.967
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_182",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     10.018,
+     3.048,
+     -4.383
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_183",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     10.463,
+     4.308,
+     -1.809
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       0.45,
+       0.65,
+       1.0
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_184",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     9.851,
+     2.883,
+     -1.151
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_185",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     9.858,
+     4.723,
+     0.754
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_186",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     10.279,
+     2.274,
+     2.54
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_187",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     10.398,
+     2.619,
+     4.287
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.88,
+       0.72
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_188",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     10.174,
+     1.195,
+     5.921
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_189",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     10.57,
+     2.212,
+     6.632
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       0.45,
+       0.65,
+       1.0
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_190",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     10.432,
+     4.011,
+     8.711
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.78,
+       0.45
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Court_191",
+    "kind": "light",
+    "light": "point",
+    "group": "LGT",
+    "at": [
+     9.668,
+     2.308,
+     10.371
+    ],
+    "components": {
+     "pointLight": {
+      "intensity": 2.2,
+      "range": 4.5,
+      "color": [
+       1.0,
+       0.62,
+       0.3
+      ],
+      "castShadows": false
+     }
+    }
+   },
+   {
+    "name": "LGT_Sun",
+    "kind": "light",
+    "light": "directional",
+    "group": "LGT",
+    "at": [
+     0,
+     20,
+     0
+    ],
+    "rotation": [
+     -33,
+     270,
+     0
+    ],
+    "components": {
+     "directionalLight": {
+      "intensity": 3.0,
+      "ambient": 0.0
+     }
+    }
+   }
+  ]
+ },
+ "sun": {
+  "azimuth": 270,
+  "elevation": 33,
+  "intensity": 0,
+  "ambient": 0,
+  "kelvin": 5600
+ },
+ "ddgi": {
+  "min": [
+   -12.0,
+   0.0,
+   -42.0
+  ],
+  "max": [
+   12.0,
+   6.0,
+   12.0
+  ],
+  "spacing": 3.0
+ },
+ "cameras": [
+  {
+   "name": "court_wide",
+   "position": [
+    0.0,
+    1.7,
+    11.0
+   ],
+   "target": [
+    0.0,
+    1.8,
+    -8.0
+   ]
+  },
+  {
+   "name": "court_corner",
+   "position": [
+    -10.5,
+    2.4,
+    10.5
+   ],
+   "target": [
+    3.0,
+    1.0,
+    -4.0
+   ]
+  },
+  {
+   "name": "threshold",
+   "position": [
+    0.0,
+    1.6,
+    -9.0
+   ],
+   "target": [
+    0.0,
+    1.4,
+    -30.0
+   ]
+  },
+  {
+   "name": "corridor_deep",
+   "position": [
+    0.0,
+    1.6,
+    -14.0
+   ],
+   "target": [
+    0.0,
+    1.4,
+    -41.0
+   ]
+  }
+ ],
+ "regions": {
+  "court_floor": {
+   "entities": [
+    "LVL_Floor_00",
+    "LVL_Floor_01",
+    "LVL_Floor_10",
+    "LVL_Floor_11",
+    "ENV_Dais"
+   ]
+  },
+  "court_walls": {
+   "entities": [
+    "LVL_Wall_N",
+    "LVL_Wall_E",
+    "LVL_Wall_W",
+    "LVL_Wall_S_L",
+    "LVL_Wall_S_R"
+   ]
+  },
+  "pillars": {
+   "entities": [
+    "ENV_Pillar_0",
+    "ENV_Pillar_1",
+    "ENV_Pillar_2",
+    "ENV_Pillar_3",
+    "ENV_Pillar_4",
+    "ENV_Pillar_5",
+    "ENV_Pillar_6",
+    "ENV_Pillar_7"
+   ]
+  },
+  "low_walls": {
+   "entities": [
+    "ENV_LowWall_A",
+    "ENV_LowWall_B",
+    "ENV_LowWall_C"
+   ]
+  },
+  "corr_floor": {
+   "entities": [
+    "LVL_Corr_Floor"
+   ]
+  },
+  "corr_walls": {
+   "entities": [
+    "LVL_Corr_Wall_L",
+    "LVL_Corr_Wall_R",
+    "LVL_Corr_Wall_End"
+   ]
+  }
+ },
+ "criteria": {
+  "information": {
+   "regions": [
+    "court_floor",
+    "court_walls",
+    "pillars",
+    "low_walls",
+    "corr_floor",
+    "corr_walls"
+   ],
+   "cameras": [
+    "court_wide",
+    "court_corner",
+    "threshold",
+    "corridor_deep"
+   ]
+  }
+ },
+ "conditions": [
+  "epic"
+ ],
+ "spike": {
+  "id": "SPK-1",
+  "lights": 256,
+  "lightIntensity": 2.2,
+  "rangeCourt": 4.5,
+  "rangeCorridor": 3.5,
+  "internalResolution": [
+   1280,
+   720
+  ],
+  "seed": 20261127
+ }
+}

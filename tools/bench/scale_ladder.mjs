@@ -8,7 +8,9 @@
 //
 // 使い方:
 //   1. PerfTest プロジェクト（assets/scenes/stress_*.json がある方）を開いた状態で
-//      エンジンを起動しておく。プロジェクトが違えば自動で開き直す。
+//      エンジンを起動しておく。プロジェクトが違う場合は、環境変数 DX12_PERFTEST_PROJECT
+//      （PerfTest フォルダ）または DX12_GOLDEN_PROJECTS_ROOT（その親フォルダ）があれば
+//      そこを開き直す。どちらも無ければ案内を出して終了コード 2 で終わる。
 //   2. node tools/bench/scale_ladder.mjs [シーン名...]
 //      省略すると stress_500 → stress_100000 の 7 段を回す。
 //
@@ -37,8 +39,11 @@
 //     listSort（→2.16ms）。影を削って GPU 律速でなくなった「後」に効いてくる順序。
 // ------------------------------------------------------------------------------
 import net from "node:net";
+import fs from "node:fs";
+import { resolvePerfTestProject } from "./lib/perftestProject.mjs";
 
-const PERFTEST_PROJECT = "C:/Users/ryuto/Documents/game/PerfTest";
+// PerfTest の場所は環境変数 DX12_PERFTEST_PROJECT（または DX12_GOLDEN_PROJECTS_ROOT の親フォルダ）で渡す。
+const PERFTEST_PROJECT = resolvePerfTestProject();
 const DEFAULT_SCENES = ["stress_500", "stress_2000", "stress_5000", "stress_10000",
                         "stress_20000", "stress_50000", "stress_100000"];
 
@@ -86,6 +91,14 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 await connect();
 const ping = await call("ping");
 if (!String(ping.result?.assetsDir ?? "").includes("PerfTest")) {
+  if (PERFTEST_PROJECT && !fs.existsSync(PERFTEST_PROJECT)) {
+    console.error(`PerfTest プロジェクトのフォルダが存在しません: ${PERFTEST_PROJECT}（DX12_PERFTEST_PROJECT / DX12_GOLDEN_PROJECTS_ROOT を確認）`);
+    process.exit(2);
+  }
+  if (!PERFTEST_PROJECT) {
+    console.error("PerfTest プロジェクトが開かれていません。環境変数 DX12_PERFTEST_PROJECT（または DX12_GOLDEN_PROJECTS_ROOT）を設定するか、先に開いてください。");
+    process.exit(2);
+  }
   console.log("PerfTest プロジェクトを開き直す…");
   await call("open_project", { path: PERFTEST_PROJECT });
   await sleep(3000);

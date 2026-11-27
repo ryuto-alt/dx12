@@ -126,6 +126,8 @@ export const SEARCH_HINTS: Record<string, string> = {
   set_virtual_geometry: "仮想ジオメトリ Nanite GPU カリング ON OFF vgeo lodPixelError 巨大メッシュ 数千万ポリゴン",
   get_render_scale: "レンダースケール 解像度 読む",
   set_render_scale: "レンダースケール 解像度 内部解像度 軽くする 負荷",
+  get_quality_preset: "品質プリセット 画質 予算 epic high cinematic 目標fps 読む",
+  set_quality_preset: "品質プリセット 画質 切替 epic high cinematic low medium 予算 目標fps",
   get_depth_prepass: "深度プリパス 読む",
   set_depth_prepass: "深度プリパス オーバードロー 最適化",
   get_ssr: "SSR 反射 読む",
@@ -213,8 +215,8 @@ export const SEARCH_HINTS: Record<string, string> = {
   ui_screenshot: "UI スクリーンショット ゲーム内UIの撮影",
   install_font: "フォント 導入 日本語フォント Noto Google Fonts 書体",
   // キャプチャ
-  screenshot: "スクリーンショット スクショ 撮影 キャプチャ シーンビュー ポスト前 画像 撮る",
-  screenshot_final: "最終画 スクリーンショット ポスト込み 人が見る 見た目 最終的な絵 撮影 仕上がり画面 撮る",
+  screenshot: "スクリーンショット スクショ 撮影 キャプチャ シーンビュー ポスト前 画像 撮る IBL 焼き直し 大気 時刻 反映待ち waitIblRebake",
+  screenshot_final: "最終画 スクリーンショット ポスト込み 人が見る 見た目 最終的な絵 撮影 仕上がり画面 撮る IBL 焼き直し 大気 時刻 反映待ち 暗い 撮り直し waitIblRebake",
   screenshot_game_view: "ゲームビュー スクリーンショット ゲーム画面 カメラ",
   screenshot_from: "視点を指定して撮る ある視点から 位置とターゲット カメラ位置 アングル 撮影 スクショ 指定カメラ",
   focus_and_screenshot: "エンティティを写す フォーカスして撮影 対象を撮る 近くから",
@@ -270,6 +272,8 @@ export const SEARCH_HINTS: Record<string, string> = {
 
 // 英語の言い回し(同じ意味の日本語は上の表)。Claude は英語で検索することも多いので、主要なツールに足してある。
 export const SEARCH_HINTS_EN: Record<string, string> = {
+  get_quality_preset: "quality preset budget epic high cinematic low medium target fps p95 p99 vfx emission",
+  set_quality_preset: "quality preset set switch epic high cinematic low medium graphics quality budget",
   get_upscaler: "upscaler dlss taau fallbackReason fallback reason why dlss not used render resolution",
   get_device_caps: "caps device caps agility SM6.9 shader model enhanced barriers DXR SER OMM gpu features capabilities",
   editor_state: "editor state autosave blockedByHumanEdits human edits unsaved",
@@ -310,7 +314,7 @@ export const SEARCH_HINTS_EN: Record<string, string> = {
   terrain_set_layers: "terrain layers snow rock grass dirt textures splat",
   create_lua_component: "lua script create write component behavior spin rotate attach new script code",
   ui_compose: "ui compose build screen menu main menu title screen hud buttons interface layout",
-  screenshot_final: "final screenshot capture image what the player sees rendered frame postprocessed take screenshot",
+  screenshot_final: "final screenshot capture image what the player sees rendered frame postprocessed take screenshot wait IBL rebake atmosphere time of day settle waitIblRebake",
   screenshot_from: "screenshot from camera position viewpoint angle capture image specific",
   focus_and_screenshot: "focus entity screenshot close up",
   perf_stats: "fps performance profile bottleneck frame time cpu gpu stats slow how many fps",

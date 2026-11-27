@@ -129,7 +129,7 @@ const KEYWORDS: Record<string, string> = {
 // ── 呼び出し本体 ─────────────────────────────────────────────────────────────
 
 async function toBody(e: any, tool: string, args: Record<string, unknown>): Promise<ErrorBody> {
-  try { return await structureError(e, { tool, args, engine }); }
+  try { return await structureError(e, { tool, args, engine, noRepeatGuard: callContext.getStore()?.mode === "call" }); }
   catch { return { code: "E_INTERNAL", message: `${tool}: ${e?.message ?? e}`, fix: [{ tool: "dx12_doctor", args: {}, why: "接続と版を確認する" }] }; }
 }
 

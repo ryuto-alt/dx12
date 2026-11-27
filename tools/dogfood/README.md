@@ -25,7 +25,7 @@ Wave ごとのゲート（W0.5 の DG05、W1 の DG1）で、エンジンを「�
 - `file`: ファイルの確認（`exists` / `absent` / `record_hash` / `hash_unchanged` / `hash_changed` / `contains`。読むだけ）。`path` の基準は `base`（`project` = プロジェクトの根が既定。シーンは `assets/scenes/...`、`instance` = エンジンのインスタンスフォルダ。ログは `dx12_engine.log`）。`contains` は `pattern`（大文字小文字を区別しない正規表現）が要る。`hash_*` は同じチェックの中で先に同じ `path` を `record_hash` していること（検証器が見る。`*` を含む path は一致した全ファイルのハッシュの組）
 - `engine`: エンジンの操作（`run.ps1` 経由）。`action` は `start` / `restart` / `stop` / `kill` / `idle_exit`（短い `idleMin` で起動しておき、MCP を呼ばずに自己終了を待つ）/ `run`（一回きり・窓なし。`--splash-selftest <dir>` の形）。任意: `args`（エンジンの引数。`{evidence}` は証拠フォルダに置き換わる）、`env`（`NAME=VALUE` の配列。`-EnvVar`）、`idleMin`（`--idle-exit` の分。小数可）、`freshData`（起動前にインスタンスの data を消す。start / restart だけ）
 - `screenshot`: 撮影の名前の指定
-- `note`: 文章での指示（仮想入力で行う操作の説明など）
+- `note`: 文章での指示（仮想入力で行う操作の説明など）。例外: 「UI-TEST-RUN 手順」と書かれた note（w1 の G20）は、エンジンを止めてから `tools/run_ui_tests.ps1 -Only <テスト名>` を実行する指示で、AGENT_PROMPT.md がこれだけを許している
 
 ## 使い方
 

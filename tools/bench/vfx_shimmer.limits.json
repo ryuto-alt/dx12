@@ -1,0 +1,8 @@
+{
+  "source": "vfx_shimmer.mjs の判定値（NB5）。数値の出どころはここ 1 か所。W1 の実測（NB8 の焚き火・松明）で見直す。",
+  "coverageDiffLuma": 8,
+  "minCoveragePct": 0.5,
+  "roiMinFrames": 3,
+  "ampLuma": 6,
+  "shimmerRatioMax": 0.1
+}

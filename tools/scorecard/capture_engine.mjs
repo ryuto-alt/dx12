@@ -21,6 +21,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { REPO_ROOT, launchInstance, connect, portOpen, sleep } from "../bench/lib/engine.mjs";
 import { loadGoldenEntries } from "../bench/lib/goldenStore.mjs";
 import { sha256, compareImages } from "../bench/lib/imageDiff.mjs";
+import { applyMasks } from "../bench/golden.mjs";
 
 const require = createRequire(import.meta.url);
 const { PNG } = require(path.join(REPO_ROOT, "tools/mcp-server/node_modules/pngjs"));
@@ -68,20 +69,6 @@ export function readPng(file) {
 function writePngBuf(file, png) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, PNG.sync.write(png));
-}
-export function applyMasks(img, masks) {
-  if (!masks?.length) return img;
-  const data = Buffer.from(img.data);
-  for (const [x0, y0, x1, y1] of masks) {
-    const ax = Math.max(0, Math.floor(x0 * img.width)), bx = Math.min(img.width, Math.ceil(x1 * img.width));
-    const ay = Math.max(0, Math.floor(y0 * img.height)), by = Math.min(img.height, Math.ceil(y1 * img.height));
-    for (let y = ay; y < by; y++)
-      for (let x = ax; x < bx; x++) {
-        const o = (y * img.width + x) * 4;
-        data[o] = 255; data[o + 1] = 0; data[o + 2] = 255; data[o + 3] = 255;
-      }
-  }
-  return { width: img.width, height: img.height, data };
 }
 const rel = (runDir, f) => path.relative(runDir, f).split(path.sep).join("/");
 const lumaOf = (img) => {

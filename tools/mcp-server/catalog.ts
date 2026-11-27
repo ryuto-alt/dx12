@@ -138,7 +138,7 @@ const WRITE_FILE_NAMES = new Set([
 ]);
 // M3 で見直し: screenshot_from / focus_and_screenshot / camera_path はエディタカメラを動かして撮る(シーンのデータは書かない)ので
 // write_scene(=Undo に積まれる)ではなく write_setting。
-const WRITE_SETTING_RE = /^dx12_(set_(post_process|ssao|ssr|ssgi|taa|dxr|volumetric_fog|shadow_pcss|contact_shadow|occlusion|depth_prepass|normal_filter|render_scale|scene_settings|sun|editor_camera)|apply_lighting_preset|look_apply|scene_env|screenshot_from|focus_and_screenshot|camera_path)$/;
+const WRITE_SETTING_RE = /^dx12_(set_(post_process|ssao|ssr|ssgi|taa|dxr|volumetric_fog|shadow_pcss|contact_shadow|occlusion|depth_prepass|normal_filter|render_scale|quality_preset|scene_settings|sun|editor_camera)|apply_lighting_preset|look_apply|scene_env|screenshot_from|focus_and_screenshot|camera_path)$/;
 
 /**
  * 「普段は read だが、引数によっては書く」ツール。dryRun で実行してよいかを引数つきで判定する。
@@ -179,8 +179,12 @@ const EXTRA_NEXT: Record<string, { tool: string; when?: string }[]> = {
 
 /** エンジンのマニフェストに examples が無いツールに、TS 側で足す例(MCP の完了の条件: 例 1 件以上)。キーは dx12_ 付きのツール名。 */
 const EXTRA_EXAMPLES: Record<string, { args: Record<string, unknown>; note?: string }[]> = {
+  dx12_screenshot: [{ args: { waitIblRebake: true, path: "shots/after_sunset.png" }, note: "物理大気の ON/OFF・時刻を変えた直後に撮るとき。IBL の焼き直しが終わるまで待つ(未了のときだけ決定論経路になり、待ちフレームが settleFrames に足される。定常状態では何も足さない)" }],
+  dx12_screenshot_final: [{ args: { waitIblRebake: true, path: "shots/after_sunset_final.png" }, note: "大気/時刻を変えた直後の最終画。焼き直し前の暗い絵を避ける。deterministic を付けなくても未了のときだけ待つ" }],
   dx12_get_device_caps: [{ args: {}, note: "GPU の機能(Agility・SM6.9・Enhanced Barriers・DXR・SER・OMM など)を読む。読み取り専用。経路は切り替わらない" }],
   dx12_get_upscaler: [{ args: {}, note: "mode と effective が違えばフォールバック中。理由は dlss.fallbackReason" }],
+  dx12_get_quality_preset: [{ args: {}, note: "現在のプリセット。high/epic/cinematic は hasBudget:true で予算(目標 fps・p95/p99・VFX)付き。low/medium は hasBudget:false で予算なし。applied:false は C7 まで絵に未反映の意味" }],
+  dx12_set_quality_preset: [{ args: { preset: "epic" }, note: "プリセット名は小文字。C1 時点では選択の記録だけ(applied:false)。性能測定の前に合わせる" }],
   dx12_editor_state: [{ args: { scope: "mode" }, note: "結果の autosave.blockedByHumanEdits が true なら人の未保存の変更あり。人に保存を依頼する(dx12_guide {topic:'autosave'})" }],
 };
 
@@ -220,7 +224,7 @@ const CATEGORY_RULES: [RegExp, string][] = [
   [/^(diagnose|ping|get_mode|get_log|get_script_errors|describe_)/, "diag"],
   [/^(list_assets|asset_info|import_asset|move_asset|delete_asset|reload_assets|read_texture)/, "asset"],
   [/^(create_lua_component|attach_lua_component|read_lua_component|get_lua_component_state|set_lua_property|reload_scripts|eval_lua|create_shader|read_shader|list_shader_templates)/, "lua"],
-  [/^(get_|set_)(post_process|ssao|ssr|ssgi|taa|dxr|volumetric_fog|shadow_pcss|contact_shadow|occlusion|depth_prepass|normal_filter|render_scale)/, "render"],
+  [/^(get_|set_)(post_process|ssao|ssr|ssgi|taa|dxr|volumetric_fog|shadow_pcss|contact_shadow|occlusion|depth_prepass|normal_filter|render_scale|quality_preset)/, "render"],
   [/^(set_pbr|set_color|set_texture|material_apply|set_mesh_shader|set_sprite_shader)/, "material"],
   [/^(play_anim|get_anim_state|set_anim_param|audio_state)/, "anim"], [/^(get_physics_state|raycast|overlap_)/, "physics"],
   [/^(open_scene|new_scene|save_scene|list_scenes|scene_|organize_scene|get_scene_settings|set_scene_settings|open_project|build_game)/, "scene"],

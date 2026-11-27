@@ -17,19 +17,19 @@ export type DiffLib = {
   resampleArea(img: Rgba, w: number, h: number): Rgba;
   compareImages(a: Rgba, b: Rgba, th: number): { diffPixels: number; diffRatio: number; meanAbs: number; maxDist: number; diffImage: Rgba };
   judge(c: any, tol: Tolerance): { pass: boolean; reasons: string[] };
+  /** golden.mjs と共有する既定の許容差(imageDiff.mjs が持つ。ここに値を写さない)。 */
+  DEFAULT_TOLERANCE: Tolerance;
 };
 
 let libCache: { dir: string; lib: DiffLib } | null = null;
 export async function loadDiffLib(repoDir: string): Promise<DiffLib> {
   if (libCache && libCache.dir === repoDir) return libCache.lib;
   const m = await importBench(repoDir, "imageDiff.mjs");
-  if (!m || typeof m.compareImages !== "function") fail("E_UNSUPPORTED", "visual_regression: tools/bench/lib/imageDiff.mjs が見つからない(リポジトリの外では比較ロジックを持てない)", { fix: [{ command: "DX12_REPO_DIR にエンジンのリポジトリのルートを渡す", why: "判定の出どころを golden.mjs と共有するため" }] });
+  if (!m || typeof m.compareImages !== "function" || !m.DEFAULT_TOLERANCE) fail("E_UNSUPPORTED", "visual_regression: tools/bench/lib/imageDiff.mjs が見つからない(リポジトリの外では比較ロジックを持てない)", { fix: [{ command: "DX12_REPO_DIR にエンジンのリポジトリのルートを渡す", why: "判定の出どころを golden.mjs と共有するため" }] });
   libCache = { dir: repoDir, lib: m as DiffLib };
   return m as DiffLib;
 }
 
-/** golden.mjs の既定の許容差(golden.mjs が定数を export していないので値を写している。golden.mjs 側の値を変えたらここも変える)。 */
-export const DEFAULT_TOLERANCE: Tolerance = { pixelThreshold: 12, maxDiffRatio: 0.001, maxMeanAbs: 0.25 };
 /** project suite の既定。基準は同じ adapter で撮ったものだけなので、golden より厳しい(1 画素でも 2 LSB を超えて違えば不合格。±2 LSB のゆらぎは許す)。 */
 export const PROJECT_TOLERANCE: Tolerance = { pixelThreshold: 2, maxDiffRatio: 0, maxMeanAbs: 0.25 };
 
@@ -86,47 +86,21 @@ export function flipMean(repoDir: string, aPng: string, bPng: string, env: NodeJ
   return { status: "ok", mean: round(v, 5) as number };
 }
 
-// ── golden suite の判定(golden.mjs と同じ式) ─────────────────────────────────
+// ── golden suite の判定(golden.mjs の judgeScene を呼ぶ) ─────────────────────────────────
 export type GoldenBaseline = { nativeWidth: number; nativeHeight: number; nativeSha256: string; compareSha256?: string };
 export type GoldenVerdict = { pass: boolean; skipped?: boolean; envMismatch?: boolean; bitExact?: boolean; diffRatio?: number; meanAbs?: number; maxDist?: number; reasons: string[]; native: string; sha: string };
 
 /**
- * 3D ゴールデン 1 件の判定。golden.mjs の runScenes と同じ順序・同じ文言の条件:
- *   ネイティブ解像度の違い → 環境違い(strict は不合格、そうでなければ SKIP)/ 基準画像なし → 不合格 / 縮めて許容差。
- * native = 今回のネイティブ画像、ref = 基準 PNG(width x height)。maskedNative は UI のとき applyMasks 後のもの。
+ * ゴールデン 1 件の判定。判定そのものは golden.mjs の judgeScene(3D / UI 共通。runScenes / runUiScenes も同じ関数)を呼ぶ。
+ * ここでは縮小と結果の整形だけ。native = 今回のネイティブ画像(UI は applyMasks 後)、ref = 基準 PNG。
  */
-export function judgeGolden(lib: DiffLib, o: { native: Rgba; ref: Rgba | null; baseline: GoldenBaseline | undefined; width: number; height: number; tol: Tolerance; strict: boolean; ui?: boolean }): GoldenVerdict {
+export function judgeGolden(lib: DiffLib, o: { gm: { judgeScene: (a: any) => any }; native: Rgba; ref: Rgba | null; baseline: GoldenBaseline | undefined; width: number; height: number; tol: Tolerance; strict: boolean; ui?: boolean }): GoldenVerdict {
   const sha = lib.sha256(o.native);
   const native = `${o.native.width}x${o.native.height}`;
-  const v: GoldenVerdict = { pass: true, reasons: [], native, sha };
-  const b = o.baseline;
-  // UI の経路(golden.mjs の runUiScenes)は、基準画像なしを環境違いより先に見る。3D の経路は逆。
-  if (o.ui && !o.ref) { v.pass = false; v.reasons.push("基準画像が無い(--update で撮る)"); if (b) v.bitExact = b.nativeSha256 === sha; return v; }
-  if (b && (b.nativeWidth !== o.native.width || b.nativeHeight !== o.native.height)) {
-    v.pass = !o.strict; v.skipped = !o.strict; v.envMismatch = true;
-    v.reasons.push(`環境違い: ネイティブ解像度が基準と違う(基準 ${b.nativeWidth}x${b.nativeHeight}、今回 ${native})`);
-    return v;
-  }
-  if (!o.ref) { v.pass = false; v.reasons.push("基準画像が無い(--update で撮る)"); if (b) v.bitExact = b.nativeSha256 === sha; return v; }
   const small = lib.resampleArea(o.native, o.width, o.height);
-  const cmp = lib.compareImages(o.ref, small, o.tol.pixelThreshold);
-  v.diffRatio = cmp.diffRatio; v.meanAbs = cmp.meanAbs; v.maxDist = cmp.maxDist;
-  const j = lib.judge(cmp, o.tol);
-  v.pass = j.pass; v.reasons.push(...j.reasons);
-  if (b) v.bitExact = b.nativeSha256 === sha;
-  return v;
-}
-
-/** golden.mjs の applyMasks と同じ(0..1 の矩形をマゼンタで塗る)。 */
-export function applyMasks(img: Rgba, masks?: number[][]): Rgba {
-  if (!masks?.length) return img;
-  const data = Buffer.from(img.data);
-  for (const [x0, y0, x1, y1] of masks) {
-    const ax = Math.max(0, Math.floor(x0 * img.width)), bx = Math.min(img.width, Math.ceil(x1 * img.width));
-    const ay = Math.max(0, Math.floor(y0 * img.height)), by = Math.min(img.height, Math.ceil(y1 * img.height));
-    for (let y = ay; y < by; y++) for (let x = ax; x < bx; x++) { const o = (y * img.width + x) * 4; data[o] = 255; data[o + 1] = 0; data[o + 2] = 255; data[o + 3] = 255; }
-  }
-  return { width: img.width, height: img.height, data };
+  const j = o.gm.judgeScene({ native: o.native, sha, small, ref: o.ref, baseline: o.baseline, tolerance: o.tol, strict: o.strict, ui: !!o.ui });
+  const { diffImage: _d, ...rest } = j;
+  return { ...rest, native, sha } as GoldenVerdict;
 }
 
 // ── 撮影(golden.mjs の captureScene / openScene / createNewScene と同じ手順) ─────────────────────────
@@ -158,12 +132,6 @@ export async function captureFinal(call: EngineCall, outFile: string, s: Capture
   return { img: readPng(file), file };
 }
 
-export function uiExtraArgs(s: { dpi?: number; theme?: string }, forceTheme: string | null): string[] {
-  const a = ["--ui-deterministic", "--dpi-scale", String(s.dpi ?? 1.0)];
-  const theme = forceTheme ?? s.theme ?? "default";
-  if (theme !== "default") a.push("--theme-variant", theme);
-  return a;
-}
 
 // ── project suite: <project>/.dx12/baselines ──────────────────────────────────
 export type BaselineKey = { adapter: string | null; driverVersion: string | null; engineVersion: string | null; renderSettingsHash: string | null; qualityPreset: string | null };

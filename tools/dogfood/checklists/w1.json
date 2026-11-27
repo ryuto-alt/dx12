@@ -789,32 +789,28 @@
       "target": [
         "A15"
       ],
-      "title": "パーティクルエディタの「適用」確認と Undo",
+      "title": "パーティクルエディタの「適用」確認と Undo（UI テスト vfx_apply_confirm）",
       "steps": [
         {
-          "kind": "engine",
-          "action": "start"
-        },
-        {
-          "kind": "input",
-          "op": "virtual_input",
-          "params": {
-            "enabled": true
-          }
+          "kind": "note",
+          "text": "DG1 の MCP は仮想入力の経路で、MCP 中は「適用」の確認モーダルが出ない（仕様）。そのためこの項目は MCP で確かめず、UI テスト vfx_apply_confirm で確かめる。これは AGENT_PROMPT.md の「唯一の例外」（UI-TEST-RUN）で、他のチェックには広げない"
         },
         {
           "kind": "note",
-          "text": "パーティクルエディタで「適用」→ 確認 → キャンセル → レイヤー不変。適用 → Ctrl+Z"
+          "text": "UI-TEST-RUN 手順: (1) 先に pwsh tools/dogfood/run.ps1 -Wave <wave> -Action stop で DG1 のエンジンを止め、エンジンが 1 つだけの状態にする。(2) pwsh tools/run_ui_tests.ps1 -Only vfx_apply_confirm を実行する（統合ブランチの先端で、既定の -Name / -Port のまま。並行して別の uitests インスタンスが動いているときだけ -Name / -Port を変える。ただし 8856 と 8915 は使わない）。窓は前面に出ない。(3) 終了コード 0 で、標準出力に「1 run, 0 failed」の行と「foreground window unchanged」の行がある → pass。-Only なので「97 not run」のような未実行の数は出て当然で、失敗ではない。(4) 終わったら必要なら DG1 のエンジンを run.ps1 -Action start で起動し直す"
         },
         {
-          "kind": "mcp",
-          "method": "get_entity"
+          "kind": "note",
+          "text": "証拠(log)として残すもの: 上のコマンドの標準出力を保存したファイル と、UI テストのインスタンスフォルダ（%LOCALAPPDATA%\\UnoEngine\\agent-instances\\uitests[-<leaf>]）の ui_test_report.txt。インスタンスフォルダは次に置き換わるまで残るが、実行直後に証拠フォルダへコピーする"
+        },
+        {
+          "kind": "note",
+          "text": "テストが見ること: レイヤー 0 に中身があると「適用」で確認が出る → キャンセルでレイヤー不変（Undo の履歴も増えない） → 置き換え → Undo（Ctrl+Z）で元に戻る。MCP 中は確認なし"
         }
       ],
-      "expect": "確認が出る。キャンセルでレイヤーが不変。適用後の Ctrl+Z で元に戻る",
+      "expect": "vfx_apply_confirm が 1 件実行され失敗 0（確認が出る・キャンセルでレイヤー不変・適用後の Undo で元に戻る）。前面ウィンドウは変わらない",
       "evidence": [
-        "screenshot",
-        "json"
+        "log"
       ],
       "severityIfFail": "major"
     }

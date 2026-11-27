@@ -1,13 +1,13 @@
 {
  "_doc": "旧 220 ツールの tools/list を固定したスナップショット(scripts/gen_legacy_snapshot.mjs で生成/--check で検査)。sha256 は M0 時点の tools/list の 1 ツール分の JSON.stringify(legacy モードと完全一致)。semSha256 は outputSchema と M3 が足した destructiveHint を外した『意味的な同一性』のハッシュ(full / core 面の旧ツールはこちらで比較)。outputSchemaBytes は M3 で削った outputSchema の JSON バイト数。",
  "count": 220,
- "totalBytes": 428578,
+ "totalBytes": 429485,
  "outputSchemaBytesTotal": 61509,
  "tools": [
   {
    "name": "dx12_ping",
-   "sha256": "853fcc6fd286a135375139daf5551c198cc1d1480fa568e29c6e8bce37afa68c",
-   "semSha256": "fd2cf1f9b9862f0519fbb47cdfa49abad69ffa2e6b195382a1a7455380caf69c",
+   "sha256": "dbcb284449d3d5bc4a734043acd27a67578170f448993bd084d3854c554d4d18",
+   "semSha256": "bd74d3a585f5774bab9f166184520bebae586dcbf04dcd1112de4367cff96322",
    "outputSchemaBytes": 303,
    "argKeys": [],
    "annotations": {
@@ -739,8 +739,8 @@
   },
   {
    "name": "dx12_create_entity",
-   "sha256": "e39c2a2cb27590852bffe40640eaf5d63a5db5e6445406ae0a1db93fd8eacaa7",
-   "semSha256": "970906e6640f8967a2ced9ee3904a8dadf9ddcdaf39636ef66097a94c0f8ad1a",
+   "sha256": "85e8c722df6eba35b1eec8d9683eecd80f0214c56ead7b3e4c4e3582b37b6b15",
+   "semSha256": "62c300d0cba4533dd1001ef509924a9e2ff8914ae1fa07231d6523728e2ca64e",
    "outputSchemaBytes": 303,
    "argKeys": [
     "type",
@@ -900,8 +900,8 @@
   },
   {
    "name": "dx12_new_scene",
-   "sha256": "d48a6e1fc806479b97d429fd057c585c2d0f4feb4a0890e2c516b86d0bcd8bca",
-   "semSha256": "913e0db8345de1abe288dd87cb7933feb3fb338bbe6976473e4bba9974c801c8",
+   "sha256": "136ddb9049ca5064e48bde19998f4016896abbdbd2c7c624662021b535d2dba0",
+   "semSha256": "47afcbbad0c969c106e9011c0ad8d90dcc1209a07468d218a13d21bf93501cec",
    "outputSchemaBytes": 303,
    "argKeys": [
     "savePath"

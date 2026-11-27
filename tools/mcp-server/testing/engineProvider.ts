@@ -20,10 +20,10 @@ export type EngineProvider = {
 };
 
 /** リポジトリの tools/bench/lib/<name>.mjs を遅延 import する。配布版(dx12-mcp)には無いので、無ければ null。 */
-export async function importBench(repoDir: string, name: string): Promise<any | null> {
+export async function importBench(repoDir: string, name: string, rethrow = false): Promise<any | null> {
   const f = path.join(repoDir, "tools", "bench", "lib", name);
   if (!fs.existsSync(f)) return null;
-  try { return await import(pathToFileURL(f).href); } catch { return null; }
+  try { return await import(pathToFileURL(f).href); } catch (e) { if (rethrow) throw e; return null; }
 }
 
 export function defaultProvider(env: KindEnv): EngineProvider {

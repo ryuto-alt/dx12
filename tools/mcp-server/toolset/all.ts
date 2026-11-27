@@ -42,6 +42,8 @@ import "./pathTracer.ts";
 import "./virtualGeometry.ts";
 // 材質シェーディング設定(マルチスキャッタ): dx12_get_shading / dx12_set_shading。legacy 面には出さない。full 面では仮想ジオメトリの次。
 import "./shading.ts";
+// 品質プリセット(FU-E-40): dx12_get_quality_preset / dx12_set_quality_preset。legacy 面には出さず、どの面でも tools/list には出さない(長尾)。
+import "./qualityPreset.ts";
 // Lua で仕掛けて N フレーム進めて読む合成ツール(dx12_lua_step)。eval_lua と同じく guarded。legacy 面には出さない。full 面では仮想ジオメトリの次。
 import "./luaStep.ts";
 // 書き換えられない正解(dx12_oracle。Q2): 金画像・性能予算・封印台帳。seal だけ guarded。legacy 面には出さない。full 面では lua_step の次。

@@ -1,0 +1,212 @@
+{
+  "_comment": "temporal_metrics.mjs の撮影手順（シーンごと）。座標・領域は 0..1 の画面の割合。数値の判定（合否）はここに置かない（PI-03 / PI-05 などの受け入れは各項目が持つ）。動かす対象の名前は tests/golden/projects/post_image/gen_scenes.mjs と対。",
+  "common": {
+    "dt": 0.016666668,
+    "warmupFrames": 60,
+    "settleFrames": 24,
+    "exposure": 1.0
+  },
+  "scenes": {
+    "taa_torture": {
+      "phases": {
+        "flicker": {
+          "_comment": "静止カメラ。右の縞（静止した細い縦縞）の領域のちらつき。柵は回し続け（遮蔽解除の負荷）、ゴースト用の球は隠す",
+          "frames": 32,
+          "region": [
+            0.62,
+            0.36,
+            0.76,
+            0.52
+          ],
+          "hide": [
+            "GhostOrb"
+          ],
+          "drive": {
+            "entity": "FenceHub",
+            "rotationPerFrame": [
+              0,
+              3,
+              0
+            ]
+          }
+        },
+        "ghost": {
+          "_comment": "球が見えている状態から、visibleFrames 枚目の後に消す。消えた後の残光のエネルギーを測る。柵は止める",
+          "visibleFrames": 12,
+          "afterFrames": 24,
+          "region": [
+            0.4,
+            0.3,
+            0.6,
+            0.6
+          ],
+          "entity": "GhostOrb",
+          "hiddenPosition": [
+            0,
+            -50,
+            0
+          ],
+          "visiblePosition": [
+            0,
+            1.2,
+            2.0
+          ]
+        },
+        "ssim": {
+          "_comment": "カメラのカット（別のカメラ位置へ飛ばす）の直後から、収束した絵（最後の refCount 枚の平均）とのマスク内 SSIM",
+          "frames": 24,
+          "refCount": 4,
+          "region": [
+            0,
+            0,
+            1,
+            1
+          ],
+          "cut": {
+            "position": [
+              3.0,
+              1.6,
+              -4.0
+            ],
+            "target": [
+              -0.5,
+              1.1,
+              1.0
+            ]
+          }
+        }
+      }
+    },
+    "dof_chart": {
+      "phases": {
+        "flicker": {
+          "frames": 24,
+          "region": [
+            0.1,
+            0.1,
+            0.9,
+            0.6
+          ]
+        },
+        "ssim": {
+          "frames": 16,
+          "refCount": 4,
+          "region": [
+            0,
+            0,
+            1,
+            1
+          ],
+          "cut": {
+            "position": [
+              1.0,
+              1.5,
+              -3.0
+            ],
+            "target": [
+              0,
+              1.5,
+              3
+            ]
+          }
+        }
+      },
+      "energy": {
+        "_comment": "A = 被写界深度 OFF、B = ON。中心は遠い点光源の 1 つ（entity の画面位置を project_world_to_screen で求める）",
+        "centerEntity": "Dot_2_1",
+        "rmax": 0.05,
+        "bins": 32,
+        "a": {
+          "post": {
+            "dofOn": false
+          }
+        },
+        "b": {
+          "post": {
+            "dofOn": true
+          }
+        }
+      }
+    },
+    "mb_wheel": {
+      "phases": {
+        "flicker": {
+          "frames": 24,
+          "region": [
+            0.05,
+            0.1,
+            0.35,
+            0.5
+          ],
+          "drive": {
+            "entity": "Wheel",
+            "rotationPerFrame": [
+              0,
+              0,
+              25
+            ]
+          }
+        }
+      },
+      "energy": {
+        "_comment": "A = モーションブラー OFF、B = ON。車輪を 25 度/フレームで回し、カメラは横へ 0.04 ずつパンしながら 8 フレーム進めた絵を比べる",
+        "leadFrames": 8,
+        "region": [
+          0.2,
+          0.15,
+          0.8,
+          0.85
+        ],
+        "drive": {
+          "entity": "Wheel",
+          "rotationPerFrame": [
+            0,
+            0,
+            25
+          ],
+          "cameraPanPerFrame": [
+            0.04,
+            0,
+            0
+          ]
+        },
+        "a": {
+          "post": {
+            "motionBlurOn": false
+          }
+        },
+        "b": {
+          "post": {
+            "motionBlurOn": true
+          }
+        }
+      }
+    },
+    "hdr_range": {
+      "phases": {
+        "flicker": {
+          "frames": 16,
+          "region": [
+            0,
+            0,
+            1,
+            1
+          ]
+        }
+      },
+      "energy": {
+        "_comment": "A = TAA OFF、B = TAA ON。総輝度の比（TAA の解決でエネルギーが増減しないか）（プロファイルは取らない。Lamp は空の明るさに埋もれるため）。★PFM はブルーム・ローカル露出・レンズの前（TAA / DoF / モーションブラーの後）で撮るので、ブルームの前後の比はここでは取れない（PI-05 には撮影位置の追加が要る）",
+        "a": {
+          "taa": {
+            "enabled": false
+          }
+        },
+        "b": {
+          "taa": {
+            "enabled": true
+          }
+        }
+      }
+    }
+  }
+}

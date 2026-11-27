@@ -1,6 +1,9 @@
 // ゴールデン画像の比較に使う純関数（pngjs にも エンジンにも依存しない。tools/bench/golden.test.mjs で検証）。
 import crypto from "node:crypto";
 
+/** 3D / UI ゴールデンの既定の許容差(golden.mjs と MCP の visual_regression がここから読む。値の出どころはこの 1 か所)。 */
+export const DEFAULT_TOLERANCE = Object.freeze({ pixelThreshold: 12, maxDiffRatio: 0.001, maxMeanAbs: 0.25 });
+
 export function sha256(img) {
   return crypto.createHash("sha256").update(img.data).digest("hex");
 }

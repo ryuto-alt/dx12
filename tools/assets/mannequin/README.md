@@ -24,3 +24,14 @@ blender --background --factory-startup --python tools/assets/mannequin/build_man
 
 確認済みの手順: `import_asset`(`assets/` へ取り込み。作り直したら `overwrite:true`)→ `spawn_model` → `play_anim`(clip 名 `Walk`、ループ。`asset_info` の durationSec は 1.0)。
 マテリアルは片面(`doubleSided` なし)。生成はビット単位で一致しない(三角形の並びが実行ごとに変わりうる)。
+
+## エンジンでの接地の確認(FU-E-34)
+
+作り直したら、エンジン(--headless・lane-d は port 8854)で読み込んで足が床に着いているかを確かめる。窓は出ない・マウスに触らない。
+
+```
+pwsh -NoProfile -File tools/parity/mannequin_feet.ps1 --build-dir <build\release のあるフォルダ>
+```
+
+カメラを y=0・水平に置き(y=0 の点は奥行きに関係なく中心行に写る)、マネキンのいない参照との差分で最下行を取り、`Walk` の 30 コマ(Play 中・固定 dt=1/30)すべてで |浮き / めり込み| <= 2cm を合格とする。エディタモードはアニメの時間が止まるので Play で撮る。判定だけの再実行は `--from-dir`。
+実測(2026-11-27、本流の build/release): 30 コマとも最下行が中心行と一致(差 0.0cm、1 画素 = 約 0.7cm)、clipTime は 0.18 から 1 周して 0.15 まで進んだ。

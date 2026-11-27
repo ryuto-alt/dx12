@@ -1,3 +1,4 @@
 # --offline のときに除くテスト（エンジンやネットワークが要るもの）。
 test.ts
 uiAssets.test.ts
+engineE2e.test.ts

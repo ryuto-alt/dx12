@@ -1295,6 +1295,15 @@ set_tests_properties(VfxBakePyTests PROPERTIES
     SKIP_REGULAR_EXPRESSION "VFXBAKE_SKIP"
     ENVIRONMENT "PYTHONUTF8=1"
     TIMEOUT 900)
+# 起動画面の A/V 検査(W1-NB5。tools/check_splash_av.py / splash_golden.py / splash_av_preview.py)の Python テスト。
+# 12ms の A/V ずれと 1px の指針のずれ・GG の黄の予算(boot/edit)を合成のダンプで確かめる。窓は出さない。numpy / Pillow が無い環境ではスキップ。
+# ゲートでは cmake -DSPLASH_AV_PYTHON=<numpy と Pillow 入りの python> -DSPLASH_AV_REQUIRED=ON を渡すと、走らなければ失敗になる。
+add_test(NAME SplashAvPyTests
+    COMMAND ${CMAKE_COMMAND} -DSPLASH_AV_TOOLS=${CMAKE_CURRENT_SOURCE_DIR}/../tools -DSPLASH_AV_PYTHON=${SPLASH_AV_PYTHON} -DSPLASH_AV_REQUIRED=${SPLASH_AV_REQUIRED} -P ${CMAKE_CURRENT_SOURCE_DIR}/../tools/run_splash_av_tests.cmake)
+set_tests_properties(SplashAvPyTests PROPERTIES
+    SKIP_REGULAR_EXPRESSION "SPLASHAV_SKIP"
+    ENVIRONMENT "PYTHONUTF8=1"
+    TIMEOUT 900)
 # ==== lane-D end ====
 
 # 頂点スカルプト（素体生成 / 溶接・隣接 / 各ブラシ / 法線の部分再計算 / 対称 / .smsh 往復）テスト。

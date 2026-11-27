@@ -460,7 +460,7 @@ export const CORE_DESCRIPTIONS: Record<string, string> = {
     + "注意: 先に dx12_ping で sceneDirty:false を確認するか dx12_save_scene。開いた後は古い entityId が無効。次: dx12_list_entities。",
 
   dx12_save_scene:
-    "現在のシーンを保存する。path は assets 相対(例 scenes/title.json)、省略で今開いているシーンへ上書き。{path} を返す(配置検査の要約 layout も付く)。\n"
+    "現在のシーンを保存する。path は assets 相対(例 scenes/title.json)、省略で今開いているシーンへ上書き。{path, projectPath} を返す(path は assets 相対で dx12_open_scene にそのまま渡せる。projectPath はプロジェクトルート相対。assets の外なら path は null。配置検査の要約 layout も付く)。\n"
     + "使う: 作業の区切り、シーン JSON を外部で触る前・開き直す前。使わない: JSON を丸ごと書く(→ dx12_call {name:'dx12_scene_write'})。\n"
     + "副作用: ファイル書込み(Undo 不可)。\n"
     + "注意: Play 中に撃たない(欠けたシーンが書かれることがある)。dx12_ping で mode:Editor を確認し、path は明示する。"

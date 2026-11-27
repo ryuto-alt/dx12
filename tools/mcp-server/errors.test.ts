@@ -254,6 +254,17 @@ console.log("[5b] BUG-14: routeFixViaCall / guardRepeatedFix / tidyUnknownToolSu
   const ev = guardRepeatedFix(mk(), "name_0", T0);
   check("guardRepeatedFix: 128 件を超えると古い鍵から捨てる(name_0 は数え直し)", ev.details?.giveUp === undefined, ev);
   resetRepeatedFixGuard();
+  // FU-E-35: 判定の初期化 / E_ENGINE_TOO_OLD への漏れ
+  const stale = mk(); stale.details = { giveUp: true, repeatedFix: 5, keep: 1 };
+  const st = guardRepeatedFix(stale, "dx12_sequence", T0);
+  check("guardRepeatedFix: 1 回目は使い回した本文の古い giveUp / repeatedFix を消す", st.details?.giveUp === undefined && st.details?.repeatedFix === undefined && (st.details as any)?.keep === 1, st);
+  const old = { ...mk(), code: "E_ENGINE_TOO_OLD", details: { giveUp: true, repeatedFix: 2 } } as any;
+  guardRepeatedFix(mk(), "dx12_old", T0); guardRepeatedFix(mk(), "dx12_old", T0);
+  const oo = guardRepeatedFix(old, "dx12_old", T0);
+  check("guardRepeatedFix: E_UNKNOWN_TOOL 以外には打ち切りを付けず、印も外す", oo.code === "E_ENGINE_TOO_OLD" && oo.details?.giveUp === undefined, oo);
+  const before = guardRepeatedFix(mk(), "dx12_old", T0);
+  check("guardRepeatedFix: E_UNKNOWN_TOOL 以外の呼び出しは数えに入らない(続く E_UNKNOWN_TOOL は 3 回目の打ち切り)", before.details?.giveUp === true && before.details?.repeatedFix === 3, before.details);
+  resetRepeatedFixGuard();
 
   const t = tidyUnknownToolSuggestions({ code: "E_UNKNOWN_TOOL", message: "m", didYouMean: ["dx12_sequence", "sequence_author", "dx12_ping"] } as any, "dx12_sequence", direct);
   check("tidyUnknownToolSuggestions: 失敗した名前を外し、直接呼べない候補を注記する", JSON.stringify(t.didYouMean) === JSON.stringify(["sequence_author", "dx12_ping"]) && (t.details as any)?.didYouMeanVia?.names?.[0] === "sequence_author", t);

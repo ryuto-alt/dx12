@@ -71,6 +71,24 @@ try {
     check("近い名前が didYouMean に入る", (e404b?.error_did_you_mean ?? []).includes("A (1)") || (e404b?.error_did_you_mean ?? []).includes("A"), e404b);
     const cf = await fail("create_entity", { type: "sphre" });
     check("未知の type は code 2 + E_BAD_ENUM + didYouMean", cf?.error_code === 2 && cf.error_name === "E_BAD_ENUM" && cf.error_did_you_mean?.includes("sphere"), cf);
+    // C14: type 必須 / 未知引数の拒否 / water / ui_canvas に parent は不可 / 3D の parent
+    const nt = await fail("create_entity", { name: "NoType" });
+    check("type 省略は box にせず code 2 + E_MISSING_PARAM", nt?.error_code === 2 && nt.error_name === "E_MISSING_PARAM" && (await call("find_entity", { name: "NoType" })) === null, nt);
+    const uk = await fail("create_entity", { type: "box", positon: [0, 1, 0] });
+    check("未知の引数は code 2 + E_UNKNOWN_PARAM + didYouMean(position)", uk?.error_code === 2 && uk.error_name === "E_UNKNOWN_PARAM" && uk.error_did_you_mean?.includes("position"), uk);
+    const wt = await call("create_entity", { type: "water", name: "Lake", position: [0, 2, 0] });
+    check("type:water が作れる", wt.name === "Lake", wt);
+    const cp = await fail("create_entity", { type: "ui_canvas", parent: wt.entityId });
+    check("ui_canvas に parent を付けるとエラー(code 2)", cp?.error_code === 2 && /ui_canvas/.test(cp.error ?? cp.message ?? JSON.stringify(cp)), cp);
+    const cpn = await fail("create_entity", { type: "ui_canvas", parentName: "Lake" });
+    check("ui_canvas に parentName もエラー", cpn?.error_code === 2, cpn);
+    const kid = await call("create_entity", { type: "box", name: "WaterKid", parent: wt.entityId });
+    const hier = await call("get_hierarchy");
+    const lakeNode = hier.roots.find((r: any) => r.name === "Lake");
+    check("3D でも parent で親子付けできる", JSON.stringify(lakeNode?.children ?? []).includes("WaterKid"), lakeNode);
+    const idem = await call("create_entity", { type: "empty", name: "Idem", idempotency_key: "k1" });
+    check("共通キー(idempotency_key)は未知引数にならない", idem.name === "Idem", idem);
+    await call("delete_entity", { entity: wt.entityId }); await call("delete_entity", { entity: idem.entityId });   // 後続の検査へ持ち越さない
     const f = await call("find_entity", { name: "Sun" });
     check("find_entity は {entityId,name} / 無ければ null", f?.name === "Sun" && (await call("find_entity", { name: "zzz" })) === null);
     const lv = await call("list_entities", { verbose: false, name_prefix: "A" });
@@ -144,6 +162,47 @@ try {
     check("set_texture: materialTextureOverrides に載る / 無いテクスチャは E_NOT_FOUND_ASSET", (await call("get_entity", { name: "M" })).materialTextureOverrides?.albedo === "textures/wood.png" && (await fail("set_texture", { name: "M", path: "textures/none.png" }))?.error_name === "E_NOT_FOUND_ASSET");
     await call("remove_component", { name: "B", component: "boxCollider" });
     check("remove_component", !(await call("get_entity", { name: "B" })).boxCollider && (await fail("remove_component", { name: "B", component: "transform" }))?.error_code === 2);
+    // FU-E-39 (C2): 3 層の放出器へ layer:7 → E_OUT_OF_RANGE / details {field,value,max:2} / エンティティは不変
+    await call("create_entity", { type: "particle_emitter", name: "Em3" });
+    await call("add_particle_layer", { name: "Em3" });
+    await call("add_particle_layer", { name: "Em3" });
+    const em0 = JSON.stringify(await call("get_entity", { name: "Em3" }));
+    const eLayer = await fail("set_component", { name: "Em3", component: "particleEmitter", data: { layer: 7, rate: 99 } });
+    check("3 層の放出器へ layer:7 → E_OUT_OF_RANGE + error_details {field:layer,value:7,max:2}", eLayer?.error_name === "E_OUT_OF_RANGE" && eLayer.error_details?.field === "layer" && eLayer.error_details.value === 7 && eLayer.error_details.max === 2 && Object.keys(eLayer.error_details).sort().join() === "field,max,value", eLayer);
+    check("拒否された呼び出しの後もエンティティは変わらない", JSON.stringify(await call("get_entity", { name: "Em3" })) === em0);
+    const eLayerP = await fail("set_component", { name: "Em3", component: "particleEmitter", layer: 7, data: { rate: 99 } });
+    check("layer を params 直下に書いても同じ拒否", eLayerP?.error_name === "E_OUT_OF_RANGE" && eLayerP.error_details?.max === 2 && JSON.stringify(await call("get_entity", { name: "Em3" })) === em0, eLayerP);
+    await call("set_component", { name: "Em3", component: "particleEmitter", data: { layer: 2, rate: 99 } });
+    // 制限: sim は層別の値を持たないので、書き込み先の形(実エンジンは 2 層以上で {layers:[...]})は検査しない。通ることと層数が変わらないことだけを見る。
+    check("範囲内の layer:2 は通り、層数は変わらない", (await call("list_particle_layers", { name: "Em3" })).count === 3);
+    const lAdd = await call("add_particle_layer", { name: "Em3", layerName: "Smoke" });
+    check("add_particle_layer は {entityId,index,name,count} を返す", lAdd.index === 3 && lAdd.name === "Smoke" && lAdd.count === 4, lAdd);
+    const lList = (await call("list_particle_layers", { name: "Em3" })).layers[3];
+    check("list_particle_layers の各層は index/name/kind/rate/looping/offset/vfxPath", ["index", "name", "kind", "rate", "looping", "offset", "vfxPath"].every((k) => k in lList) && lList.name === "Smoke", lList);
+    await call("remove_component", { name: "Em3", component: "particleEmitter" });
+    const eRm = await fail("set_component", { name: "Em3", component: "particleEmitter", data: { layer: 2, rate: 5 } });
+    check("放出器を消した後の layer:2 は E_OUT_OF_RANGE max:0(古い層を持ち越さない)", eRm?.error_name === "E_OUT_OF_RANGE" && eRm.error_details?.max === 0, eRm);
+    await call("set_component", { name: "Em3", component: "particleEmitter", data: { rate: 5 } });
+    check("作り直した放出器は 1 層", (await call("list_particle_layers", { name: "Em3" })).count === 1);
+    await call("create_entity", { type: "particle_emitter", name: "Em4" });
+    await call("add_particle_layer", { name: "Em4" }); await call("add_particle_layer", { name: "Em4" });
+    // 呼び出し側の入力を書き換えない
+    const inData = { rate: 7 };
+    await call("set_component", { name: "Em4", component: "particleEmitter", layer: 1, data: inData });
+    check("set_component は呼び出し側の data を書き換えない", JSON.stringify(inData) === JSON.stringify({ rate: 7 }), inData);
+    // rollback でレイヤー数も戻る(同じ id の新放出器へ持ち越さない)
+    await call("transaction_begin", { label: "layers" });
+    await call("create_entity", { type: "particle_emitter", name: "EmTx" });
+    await call("add_particle_layer", { name: "EmTx" });
+    await call("add_particle_layer", { name: "EmTx" });
+    await call("transaction_rollback", {});
+    await call("create_entity", { type: "particle_emitter", name: "EmTx2" });
+    const eTx = await fail("set_component", { name: "EmTx2", component: "particleEmitter", data: { layer: 2 } });
+    check("rollback 後の新放出器は 1 層: layer:2 は E_OUT_OF_RANGE max:0", eTx?.error_name === "E_OUT_OF_RANGE" && eTx.error_details?.max === 0, eTx);
+    await call("transaction_begin", { label: "layers2" });
+    await call("add_particle_layer", { name: "Em4" });
+    await call("transaction_rollback", {});
+    check("既存放出器への add_particle_layer も rollback で戻る", (await call("list_particle_layers", { name: "Em4" })).count === 3);
     const q = await call("set_transform", { name: "B", quaternion: [0, 0.7071068, 0, 0.7071068] });
     check("quaternion → euler(yaw 90)", nearV((await call("get_entity", { name: "B" })).transform.rotation, [0, 90, 0], 0.01) && q.entityId > 0);
     const badPos = await fail("set_transform", { name: "B", position: [1, 2] });
@@ -299,6 +358,18 @@ try {
     check("get_mode は mock の mode を返す", (await call("get_mode")).mode === "Editor");
     check("snapshot() は entities / settings を含む複製", sim.snapshot().entities.length === sim.state.entities.length && sim.snapshot().entities !== sim.state.entities);
     check("hash は entityId / guid に依存しない(同じ内容を別 id で作っても同じ)", (() => { const a = createSceneSim(); return a.hash() === createSceneSim().hash(); })());
+    // ── [9] C14: new_scene の実結果 / ping の currentScene・currentSceneProjectPath / save_scene の path・projectPath ──
+    console.log("[9] new_scene / ping / save_scene の形");
+    const ns = await call("new_scene", { savePath: "scenes/level2.json" });
+    check("new_scene(savePath あり) = {sceneName,path,projectPath,entityCount,sceneGeneration,saved:true}", ns.sceneName === "level2" && ns.path === "scenes/level2.json" && ns.projectPath === "assets/scenes/level2.json" && ns.entityCount === 0 && typeof ns.sceneGeneration === "number" && ns.saved === true && ns.applied === undefined, ns);
+    const pg = await call("ping");
+    check("ping は currentScene(assets 相対)と currentSceneProjectPath を返す", pg.currentScene === "scenes/level2.json" && pg.currentSceneProjectPath === "assets/scenes/level2.json", pg);
+    const nu = await call("new_scene", {});
+    check("new_scene(savePath なし) = path/projectPath が null・saved:false", nu.path === null && nu.projectPath === null && nu.saved === false && nu.entityCount === 0 && nu.sceneGeneration === ns.sceneGeneration + 1, nu);
+    const pu = await call("ping");
+    check("未保存の新規シーンでは ping の currentScene / currentSceneProjectPath が null", pu.currentScene === null && pu.currentSceneProjectPath === null, pu);
+    const sv = await call("save_scene", { path: "scenes/x.json" });
+    check("save_scene は {path, projectPath} を返す", sv.path === "scenes/x.json" && sv.projectPath === "assets/scenes/x.json" && sv.saved === undefined, sv);
   }
 } finally {
   sock.destroy();

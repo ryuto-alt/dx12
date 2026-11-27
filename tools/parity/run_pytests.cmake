@@ -11,6 +11,8 @@ foreach(_c "${PARITY_DIR}/.venv/Scripts/python.exe" "${PARITY_DIR}/.venv/bin/pyt
     endif()
 endforeach()
 if(NOT _py)
+    # 通常変数 _py が "" のままだと find_program の結果(キャッシュ)が隠れて常にスキップになるので、先に消す
+    unset(_py)
     find_program(_py NAMES python python3)
 endif()
 if(NOT _py)

@@ -35,6 +35,8 @@ export type SimEntity = {
   tags?: string[];
   data?: Record<string, { t: string; v: any }>;
   internal?: boolean;
+  /** particleEmitter の追加レイヤー名(既定の 1 枚目 "Layer 1" を含む)。clone/rollback/削除/複製/hash に自動で乗せるため実体側に持つ。未設定=1 枚。 */
+  particleLayers?: string[];
 };
 
 export type SimFailure = { method: string; nth: number; name?: string; message: string; code: number; count: number };
@@ -168,7 +170,9 @@ const COMP_DEFAULTS: Record<string, any> = {
 const COMP_ORDER = ["pointLight", "directionalLight", "spotLight", "camera", "rigidBody", "boxCollider", "sphereCollider", "capsuleCollider", "characterController", "meshCollider", "sprite2d", "trailRenderer", "decal", "trigger", "particleEmitter", "audioSource", "audioReverbZone", "virtualGeometry", "uiCanvas", "uiRect", "uiImage", "uiText", "uiButton", "uiSlider", "uiToggle", "uiScrollView", "luaScript", "gridPlane"];
 const SETTABLE = new Set([...Object.keys(COMP_DEFAULTS).filter((k) => k !== "gridPlane"), "tags", "data"]);
 
-const CREATE_TYPES = ["box", "sphere", "plane", "empty", "camera", "light_directional", "light_point", "light_spot", "particle_emitter", "trigger", "decal", "ui_canvas", "ui_image", "ui_text", "ui_button", "ui_slider", "ui_toggle", "ui_scrollview"];
+const CREATE_TYPES = ["box", "sphere", "plane", "empty", "camera", "light_directional", "light_point", "light_spot", "particle_emitter", "trigger", "decal", "water", "ui_canvas", "ui_image", "ui_text", "ui_button", "ui_slider", "ui_toggle", "ui_scrollview"];
+/** create_entity が受ける引数(エンジンの McpCreateEntityParams.h と揃える。共通の dispatch が運ぶ共通キーも既知)。 */
+const CREATE_KNOWN_KEYS = ["type", "name", "parent", "parentName", "position", "size", "subdivisions", "expectGeneration", "idempotency_key", "idempotencyKey", "dryRun", "confirm_token"];
 const UI_DEFAULT_NAMES: Record<string, string> = { ui_canvas: "UICanvas", ui_image: "UIImage", ui_text: "UIText", ui_button: "UIButton", ui_slider: "UISlider", ui_toggle: "UIToggle", ui_scrollview: "UIScrollView" };
 
 const PRESETS: Record<string, { label: string; tip: string; sun: { intensity: number; ambient: number; color: Vec3; az: number; el: number }; post: Record<string, any> }> = {
@@ -454,7 +458,17 @@ export function createSceneSim(opts: SimOptions = {}) {
   };
   def("create_entity", "write_scene", (p, ctx) => {
     requireEditor(ctx, "create entities");
-    const type = String(p.type ?? "box");
+    // ★type は必須(省略を黙って box にしない)。未知のキーも黙って捨てず E_UNKNOWN_PARAM(エンジンの C14 と同じ)。
+    for (const k of Object.keys(p)) {
+      if (!CREATE_KNOWN_KEYS.includes(k)) {
+        const dym = nearest(k, CREATE_KNOWN_KEYS, 1);
+        throw simErr(2, `unknown parameter '${k}' for create_entity`, { error_name: "E_UNKNOWN_PARAM", error_cause: "create_entity が受け取らない引数が渡された(黙って無視すると意図と違うものが作られる)", error_did_you_mean: dym });
+      }
+    }
+    if (typeof p.type !== "string" || !p.type) throw simErr(2, "create_entity: missing required param 'type'", { error_name: "E_MISSING_PARAM", error_cause: "必須の引数 'type' が渡されていない(黙って box にしない)" });
+    const type = p.type;
+    if (type === "ui_canvas" && (p.parent !== undefined || p.parentName !== undefined)) throw simErr(2, `'${p.parent !== undefined ? "parent" : "parentName"}' cannot be used with type 'ui_canvas' (a canvas is always a root)`, { error_name: "E_INVALID_PARAM" });
+    const parentEnt = p.parent !== undefined || p.parentName !== undefined ? resolve(p.parent !== undefined ? { entity: p.parent } : { name: p.parentName }) : undefined;
     if (!CREATE_TYPES.includes(type)) throw simErr(2, `type must be one of: ${CREATE_TYPES.join(", ")}`, { error_name: "E_BAD_ENUM", error_values: CREATE_TYPES, error_did_you_mean: nearest(type, CREATE_TYPES, 3) });
     let name = typeof p.name === "string" ? p.name : "";
     if (!name) name = UI_DEFAULT_NAMES[type] ?? (type[0].toUpperCase() + type.slice(1));
@@ -469,15 +483,17 @@ export function createSceneSim(opts: SimOptions = {}) {
     else if (type === "light_directional") { e = mkEntity({ name, kind: "light", comps: { directionalLight: clone(COMP_DEFAULTS.directionalLight) } }); e.transform.rotation = [-30, 0, 0]; }
     else if (type === "trigger") e = mkEntity({ name, kind: "trigger", comps: { trigger: clone(COMP_DEFAULTS.trigger) } });
     else if (type === "particle_emitter") e = mkEntity({ name, kind: "other", comps: { particleEmitter: clone(COMP_DEFAULTS.particleEmitter) } });
+    else if (type === "water") e = mkEntity({ name, kind: "other" });
     else if (type === "decal") e = mkEntity({ name, kind: "other", comps: { decal: clone(COMP_DEFAULTS.decal) } });
     else if (type === "ui_canvas") e = mkEntity({ name, kind: "other", comps: { uiCanvas: clone(COMP_DEFAULTS.uiCanvas) } });
     else {
       // ui_*: 親 Canvas を自動選択/生成する(実エンジンと同じ)。
-      let canvas = state.entities.find((x) => x.comps.uiCanvas);
+      let canvas = parentEnt ?? state.entities.find((x) => x.comps.uiCanvas);
       if (!canvas) { canvas = addEntity(mkEntity({ name: uniquify("UICanvas"), kind: "other", comps: { uiCanvas: clone(COMP_DEFAULTS.uiCanvas) } })); ids.push(canvas.id); }
       const key = { ui_image: "uiImage", ui_text: "uiText", ui_button: "uiButton", ui_slider: "uiSlider", ui_toggle: "uiToggle", ui_scrollview: "uiScrollView" }[type as string] as string;
       e = mkEntity({ name, kind: "other", parent: canvas.id, comps: { uiRect: clone(COMP_DEFAULTS.uiRect), [key]: clone(COMP_DEFAULTS[key]) } });
     }
+    if (parentEnt && !type.startsWith("ui_")) e.parent = parentEnt.id;
     finishCreate(e, p.position, name);
     ids.push(e.id);
     return { entityId: e.id, name: e.name, sceneGeneration: 1, ...(type.startsWith("ui_") ? { entityIds: [e.id] } : {}) };
@@ -552,11 +568,44 @@ export function createSceneSim(opts: SimOptions = {}) {
     e.textures = { ...(e.textures ?? {}), [slot]: path };
     return { entityId: e.id, path, slot, ...undoInfo("set_texture") };
   });
+  // particleEmitter のレイヤー(実エンジンは放出器ごとに最大 16 枚)。名前は add_particle_layer が付けたものだけ追う。
+  const layersOf = (e: SimEntity): string[] => e.particleLayers ?? ["Layer 1"];
+  // エラーの code/名前は実エンジン(ApplicationMcpEntity.cpp add_particle_layer)に合わせる: 放出器なし=NotFound(1)、16 枚超=InvalidParam(2)。
+  def("add_particle_layer", "write_scene", (p) => {
+    const e = resolve(p);
+    if (!e.comps.particleEmitter) throw simErr(1, "entity has no ParticleEmitter", { error_name: "E_NOT_FOUND_COMPONENT" });
+    const ls = [...layersOf(e)];
+    if (ls.length >= 16) throw simErr(2, "レイヤーが多すぎます（上限 16 枚）", { error_name: "E_INVALID_PARAM" });
+    ls.push(typeof p.layerName === "string" && p.layerName ? p.layerName : `Layer ${ls.length + 1}`);
+    e.particleLayers = ls;
+    return { entityId: e.id, index: ls.length - 1, name: ls[ls.length - 1], count: ls.length, ...undoInfo("add_particle_layer") };
+  });
+  def("list_particle_layers", "read", (p) => {
+    const e = resolve(p);
+    if (!e.comps.particleEmitter) throw simErr(1, "entity has no ParticleEmitter", { error_name: "E_NOT_FOUND_COMPONENT" });
+    const ls = layersOf(e);
+    // 制限: sim は層ごとの値を持たない(set_component の中身は放出器 1 個に平らに入る)。kind/rate などは放出器の既定値を全層に返すだけで、実エンジンの層別の値とは一致しない。
+    const d = COMP_DEFAULTS.particleEmitter;
+    return { entityId: e.id, layers: ls.map((name, index) => ({ index, name, kind: d.kind, rate: d.rate, looping: d.looping, offset: [0, 0, 0], vfxPath: "" })), count: ls.length };
+  });
   def("set_component", "write_scene", (p) => {
     const e = resolve(p);
     const comp = String(p.component ?? "");
     if (!comp) throw simErr(2, "missing 'component'", { error_name: "E_MISSING_PARAM" });
-    const data = p.data !== undefined ? p.data : p.values;
+    // 呼び出し側の p.data を書き換えないよう複製してから扱う(実エンジンも複製で処理する)。
+    const rawData = p.data !== undefined ? p.data : p.values;
+    const data = rawData && typeof rawData === "object" ? clone(rawData) : rawData;
+    // layer は選択子。範囲外・不明は【何も変えずに】E_OUT_OF_RANGE(実エンジン BUG-07 と同じ形: details={field,value,max})。
+    if (comp === "particleEmitter" && p.layer !== undefined && !(data && typeof data === "object" && "layer" in data)) {
+      if (data && typeof data === "object" && !Array.isArray(data)) (data as any).layer = p.layer;
+    }
+    if (comp === "particleEmitter" && data && typeof data === "object" && "layer" in data) {
+      const ls = layersOf(e); const lj = (data as any).layer;
+      const ok = Number.isInteger(lj) ? lj >= 0 && lj < ls.length : typeof lj === "string" && (e.comps.particleEmitter ? ls.includes(lj) : lj === "");   // 放出器が無い時は 1 枚目が作られるので "" だけ通る(実エンジンと同じ)
+      if (!ok) throw simErr(2, "set_component: particleEmitter の layer が範囲外または見つかりません", {
+        error_name: "E_OUT_OF_RANGE", error_cause: "layer が既存のレイヤーを指していない(何も変更せずに断る)", error_details: { field: "layer", max: ls.length - 1, value: lj },   // キー順は実エンジン(nlohmann::json=ソート済み)の出力に合わせる
+      });
+    }
     if (comp === "tags" && Array.isArray(data)) {
       if (data.some((s: any) => typeof s !== "string")) throw simErr(2, "tags must be an array of strings", { error_name: "E_BAD_TYPE" });
       e.tags = [...data];
@@ -575,8 +624,11 @@ export function createSceneSim(opts: SimOptions = {}) {
       }
       e.data = { ...(e.data ?? {}), ...clone(data) };
     } else if (SETTABLE.has(comp) && comp !== "tags") {
+      if (comp === "particleEmitter" && !e.comps.particleEmitter) delete e.particleLayers;   // 放出器を新規に作る=1 層から(古い層名を持ち越さない)
       const cur = e.comps[comp] ?? clone(COMP_DEFAULTS[comp] ?? {});
-      e.comps[comp] = fr({ ...cur, ...clone(data) });
+      const merged: any = { ...cur, ...clone(data) };
+      if (comp === "particleEmitter") delete merged.layer;
+      e.comps[comp] = fr(merged);
     } else {
       throw simErr(6, `unknown/unsupported component: ${comp} (call dx12_describe_components)`, {
         error_name: "E_NOT_FOUND_COMPONENT", error_did_you_mean: nearest(comp, [...SETTABLE], 3), error_hint: "dx12_describe_components で settable な jsonKey を確かめる",
@@ -591,7 +643,7 @@ export function createSceneSim(opts: SimOptions = {}) {
     let removed = false;
     if (comp === "tags" && e.tags) { delete e.tags; removed = true; }
     else if (comp === "data" && e.data) { delete e.data; removed = true; }
-    else if (comp in e.comps) { delete e.comps[comp]; removed = true; }
+    else if (comp in e.comps) { delete e.comps[comp]; if (comp === "particleEmitter") delete e.particleLayers; removed = true; }
     if (!removed) throw simErr(6, `unknown/unsupported component: ${comp} (call dx12_describe_components)`, { error_name: "E_NOT_FOUND_COMPONENT", error_did_you_mean: nearest(comp, Object.keys(e.comps), 3) });
     return { entityId: e.id, removed: comp, ...undoInfo("remove_component") };
   });
@@ -894,6 +946,7 @@ export function createSceneSim(opts: SimOptions = {}) {
       name: e.name, parent: nameOf(e.parent), kind: e.kind, primitive: e.primitive ?? null, modelPath: e.modelPath ?? null,
       transform: e.transform, color: e.color ?? null, material: e.material ?? null, textures: e.textures ?? null,
       comps: e.comps, tags: e.tags ?? null, data: e.data ?? null,
+      ...(e.particleLayers ? { particleLayers: e.particleLayers } : {}),
     }));
   };
   const hash = (): string => crypto.createHash("sha1").update(JSON.stringify(normalized(state.entities))).digest("hex").slice(0, 16);
