@@ -19,7 +19,18 @@ const sphere = (name, pos, r, color, metallic, roughness, extra = {}) => ({
 const box = (name, pos, scale, color, metallic = 0.0, roughness = 0.6, extra = {}) => ({
   name, primitive: "box", color, material: { metallic, roughness, ...extra }, transform: tf(pos, [0, 0, 0], scale),
 });
-const write = (name, scene) => fs.writeFileSync(path.join(OUT, `${name}.json`), JSON.stringify(scene, null, 2) + "\n");
+// --check: 書き込まず、生成結果が assets/scenes の既存 JSON と意味的に一致するかだけ見る（ctest GoldenScenesCheck）。
+// 終了コード: 0 = 一致 / 1 = 不一致 / 2 = 実行不能（既存ファイルが無い・読めない・JSON として壊れている）。
+const CHECK = process.argv.includes("--check");
+const mismatches = [];
+const write = (name, scene) => {
+  const file = path.join(OUT, `${name}.json`);
+  if (!CHECK) { fs.writeFileSync(file, JSON.stringify(scene, null, 2) + "\n"); return; }
+  let cur;
+  try { cur = JSON.parse(fs.readFileSync(file, "utf8")); }
+  catch (e) { console.error(`実行不能: ${file} を読めない: ${e.message}`); process.exit(2); }
+  if (JSON.stringify(cur) !== JSON.stringify(JSON.parse(JSON.stringify(scene)))) mismatches.push(name);
+};
 
 // 1) PBR 球の列: 金属 0/1 x 粗さ 0.05..1.0（手続きの空の IBL を映す）
 {
@@ -133,17 +144,20 @@ const srgbToLinear = (v) => { const c = v / 255; return c <= 0.04045 ? c / 12.92
     box("Front", [0, H / 2, -t / 2], [W, H, t], wall, 0.0, 0.8),
     box("Left", [-W / 2 - t / 2, H / 2, D / 2], [t, H, D], [0.75, 0.12, 0.1], 0.0, 0.8),
     box("Right", [W / 2 + t / 2, H / 2, D / 2], [t, H, D], [0.12, 0.6, 0.18], 0.0, 0.8),
-    box("PanelStrip", [0, H - 0.05, D / 2], [2.4, 0.06, 5.0], [1.0, 0.95, 0.85], 0.0, 0.5, { emissiveColor: [1.0, 0.92, 0.78], emissiveIntensity: 8.0 }),
-    sphere("OrbR", [-2.2, 0.55, 3.0], 0.5, [1, 1, 1], 0.0, 0.4, { emissiveColor: [1.0, 0.25, 0.1], emissiveIntensity: 5.0 }),
-    sphere("OrbB", [2.2, 0.55, 3.0], 0.5, [1, 1, 1], 0.0, 0.4, { emissiveColor: [0.15, 0.4, 1.0], emissiveIntensity: 5.0 }),
-    sphere("Chrome", [0, 0.6, 5.0], 0.6, [0.95, 0.95, 0.97], 1.0, 0.08),
-    sphere("Matte", [-1.0, 0.45, 1.6], 0.45, [0.8, 0.8, 0.8], 0.0, 0.9),
-    sphere("Satin", [1.0, 0.45, 1.6], 0.45, [0.85, 0.65, 0.2], 1.0, 0.35),
+    box("PanelStrip", [0, H - 1.0, D / 2 + 0.5], [2.4, 0.06, 3.0], [1.0, 0.95, 0.85], 0.0, 0.5, { emissiveColor: [1.0, 0.92, 0.78], emissiveIntensity: 3.0 }),
+    sphere("OrbR", [-2.2, 0.55, 5.4], 0.5, [0.05, 0.05, 0.05], 0.0, 0.4, { emissiveColor: [1.0, 0.25, 0.1], emissiveIntensity: 1.5 }),
+    sphere("OrbB", [2.2, 0.55, 5.4], 0.5, [0.05, 0.05, 0.05], 0.0, 0.4, { emissiveColor: [0.15, 0.4, 1.0], emissiveIntensity: 1.5 }),
+    sphere("Chrome", [0, 0.6, 6.4], 0.6, [0.95, 0.95, 0.97], 1.0, 0.08),
+    sphere("Matte", [-0.85, 0.45, 4.4], 0.45, [0.8, 0.8, 0.8], 0.0, 0.9),
+    sphere("Satin", [0.85, 0.45, 4.4], 0.45, [0.85, 0.65, 0.2], 1.0, 0.35),
   ];
   const pl = (name, pos, color, intensity, range) => ({ name, pointLight: { color, intensity, range }, transform: tf(pos) });
-  es.push(pl("Lamp_Top", [0, H - 0.4, D / 2], [1.0, 0.92, 0.78], 18.0, 9.0));
-  es.push(pl("Lamp_R", [-2.2, 1.2, 3.0], [1.0, 0.3, 0.12], 6.0, 5.0));
-  es.push(pl("Lamp_B", [2.2, 1.2, 3.0], [0.2, 0.4, 1.0], 6.0, 5.0));
-  write("lookdev_emissive_room", { skybox: { iblIntensity: 0.12, skyboxIntensity: 0.0, drawSkybox: false }, entities: es, shadows: true });
+  es.push(pl("Lamp_Top", [0, H - 1.4, D / 2 + 0.5], [1.0, 0.92, 0.78], 18.0, 9.0));
+  es.push(pl("Lamp_R", [-2.2, 1.2, 5.4], [1.0, 0.3, 0.12], 6.0, 5.0));
+  es.push(pl("Lamp_B", [2.2, 1.2, 5.4], [0.2, 0.4, 1.0], 6.0, 5.0));
+  write("lookdev_emissive_room", { skybox: { iblIntensity: 0.03, skyboxIntensity: 0.0, drawSkybox: false }, entities: es, shadows: true });
 }
-console.log("シーンを生成した:", OUT);
+if (CHECK) {
+  if (mismatches.length) { console.error("gen_scenes.mjs の出力が assets/scenes と違う: " + mismatches.join(", ")); process.exit(1); }
+  console.log("gen_scenes.mjs の出力は assets/scenes と一致");
+} else console.log("シーンを生成した:", OUT);

@@ -1365,6 +1365,22 @@ if(TARGET Scene)
     endif()
     add_test(NAME SceneShadingPersistTests COMMAND SceneShadingPersistTests)
 endif()
+# C4: ルックデブの純関数テスト（node --test）と、gen_scenes.mjs の出力が assets/scenes と一致するかの確認。
+# node が無い環境は黙って省かず、必ず失敗するテストとして登録する（cmake -E false は終了コード 1）。
+find_program(DX12_NODE_EXE_C node)
+if(DX12_NODE_EXE_C)
+    add_test(NAME LookdevCheckUnit COMMAND ${DX12_NODE_EXE_C} --test ${DX12_REPO_ROOT}/tools/lookdev
+             WORKING_DIRECTORY ${DX12_REPO_ROOT})
+    set_tests_properties(LookdevCheckUnit PROPERTIES TIMEOUT 120)
+    # 終了コード 0 = 一致 / 1 = 不一致 / 2 = 実行不能（既存シーンが読めない）
+    add_test(NAME GoldenScenesCheck COMMAND ${DX12_NODE_EXE_C}
+             ${DX12_REPO_ROOT}/tests/golden/projects/golden_core/gen_scenes.mjs --check
+             WORKING_DIRECTORY ${DX12_REPO_ROOT})
+    set_tests_properties(GoldenScenesCheck PROPERTIES TIMEOUT 120)
+else()
+    add_test(NAME LookdevCheckUnit COMMAND ${CMAKE_COMMAND} -E false)
+    add_test(NAME GoldenScenesCheck COMMAND ${CMAKE_COMMAND} -E false)
+endif()
 # ==== lane-C end ====
 # ==== lane-D begin ====
 # VFX-02a 焼き込み(tools/vfx_bake)の Python テスト。numpy / pytest が無い環境ではスキップ扱い。
