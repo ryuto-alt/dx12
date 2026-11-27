@@ -1,6 +1,6 @@
 @echo off
 setlocal
-set "VCPKG_ROOT=C:\Users\ryuto\vcpkg"
+if not defined VCPKG_ROOT set "VCPKG_ROOT=%USERPROFILE%\vcpkg"
 rem Limit parallel jobs to avoid swap-freeze on 16GB RAM. Override via DX12_BUILD_JOBS.
 if not defined DX12_BUILD_JOBS set "DX12_BUILD_JOBS=10"
 call "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1

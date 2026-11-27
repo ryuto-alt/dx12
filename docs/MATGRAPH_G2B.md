@@ -265,7 +265,7 @@
 
 - **`GameRuntime.exe`（pak 起動）の実機起動は未確認**。焼き込みと pak からの PSO 生成は単体テストで確認したが、Game.exe を起動する検証は前面化（ユーザー操作を奪う）を伴うため行っていない。
 - 全 UI 自動テスト（`--ui-tests-run-all`）は未実行（既知の `build_game` テストが Game.exe を前面起動するため。本作業はエディタ UI に触れていない）。
-- 本体の作業ツリー（`C:\Users\ryuto\Documents\dx12`）の全ビルド + ctest は、他エージェントの作業途中（foliage / EditorUi / VG 等）で何度もビルドが通らなかったため、**変更前後の検証は私設の作業ツリー**（本体の複写 + 未完成箇所への最小パッチ 2 件: `ApplicationMcpEditorUi.cpp` のキャプチャ指定と `InspectorPanel.cpp` の前方宣言。どちらも本体には入れていない）で行った。本体でのビルドは最後に試して通った（他エージェントの作業が落ち着いた後。§11.5）。
+- 本体の作業ツリー（`<リポジトリのルート>`）の全ビルド + ctest は、他エージェントの作業途中（foliage / EditorUi / VG 等）で何度もビルドが通らなかったため、**変更前後の検証は私設の作業ツリー**（本体の複写 + 未完成箇所への最小パッチ 2 件: `ApplicationMcpEditorUi.cpp` のキャプチャ指定と `InspectorPanel.cpp` の前方宣言。どちらも本体には入れていない）で行った。本体でのビルドは最後に試して通った（他エージェントの作業が落ち着いた後。§11.5）。
 - 性能: グラフ材質の描画コスト（フレーム時間・GPU 時間）は未計測（要求外）。パラメータプールの読み出しは UPLOAD ヒープの読み取り（PCIe 越え）。大量のグラフ材質でフレームが重くなるなら、プールを DEFAULT ヒープ + 差分コピーへ変える（`SyncPool` 1 か所の変更）。
 - RTX 5060 以外の GPU（非対応 GPU は `IsAvailable() = false` で代理材質。`DX12_DISABLE_MAIN_BINDLESS=1` の実機テストは G2a 済み・本作業では未実施）。
 - エンジンの HLSL ヘッダ（`ForwardShade.hlsli` など）を編集しても、動作中のグラフ材質は自動では作り直されない（ディスクキャッシュのキーは include の内容を含むので次回のビルドでは新しい内容になる）。開発中は `material_graph_compile {force:true}` で作り直す。

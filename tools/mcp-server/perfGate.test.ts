@@ -7,6 +7,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import "./testEnv.ts";
+import os from "node:os";
+// 実機の GPU 枠マーカー(%TEMP%\uno-gpu-slot-holders)に左右されないよう、空の置き場へ向ける
+process.env.DX12_GPU_MARKER_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "gm-"));
 import { tmpDir, rmTree } from "./fleetTestKit.ts";
 import { loadJobsConfig } from "./jobs/config.ts";
 import type { KindEnv } from "./jobs/env.ts";
@@ -245,6 +248,14 @@ console.log("[3] ジョブ本体");
   const stolen = await acquireGpuWindow({ file: lockFile });
   check("持ち主の PID が居ない古いロックは奪える", typeof stolen === "function");
   stolen?.();
+  const md = mk("markers");
+  fs.writeFileSync(path.join(md, "1-1.json"), JSON.stringify({ pid: process.ppid, slot: 1 }));
+  const blocked = await acquireGpuWindow({ file: lockFile, markerDir: md });
+  check("GPU の枠(golden / UI テスト / エンジン)の生きたマーカーがあれば窓を取らない(取った窓は返す)", blocked === null && !fs.existsSync(lockFile));
+  fs.writeFileSync(path.join(md, "1-1.json"), JSON.stringify({ pid: 2147483000, slot: 1 }));
+  const after = await acquireGpuWindow({ file: lockFile, markerDir: md });
+  check("死んだ持ち主のマーカーは無視して取れる", typeof after === "function");
+  after?.();
 }
 
 console.log("[4] A/B(ABAB + A/A)");

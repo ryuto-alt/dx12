@@ -34,7 +34,12 @@
     3. 並列数を制限(-j)し、Ninja の負荷平均制限(-l)も付ける。
     4. vcvars64 を自動で読み込む(通常の PowerShell / bash から直接呼べる)。
     5. ビルドは chcp 65001 下で走らせ、前後で #deps 0 を検査・報告する。
-    6. 所要時間を表示。終了コードは cmake の終了コードをそのまま返す。
+       検査は .ninja_deps が前回の「異常 0 件」の確認から変わったときだけ走る(何もしないビルドでは走らない)。
+       ビルド前の検査はスロット取得の前、ビルド後の検査はスロット解放の後(他のビルドを待たせない)。
+       検出時に clean するのはビルド前の検査だけ。意味(#deps 0 の obj を 1 度だけ clean して直す)は変えていない。
+    6. vcvars64 の環境は %LOCALAPPDATA%\dx12-build-cache にキャッシュする(tools/lib/BuildEnv.psm1。VS を更新すれば自動で作り直す)。
+       DX12_BUILD_NO_VCVARS_CACHE=1 でキャッシュを使わない。
+    7. 所要時間を表示。終了コードは cmake の終了コードをそのまま返す。
 #>
 param(
     [string[]]$Target = @('DX12Engine'),
@@ -49,6 +54,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
+Import-Module (Join-Path $PSScriptRoot 'lib\BuildEnv.psm1') -Force
 
 # --- DLSS SDK の有無（CMakeLists.txt の UNO_DLSS_ACTIVE と同じ 3 ファイルで判定する）
 $dlssSdk = Join-Path $root 'third_party\dlss'
@@ -151,6 +157,47 @@ try {
         Start-Sleep -Seconds 3
     }
 
+    # --- 事前: ninja の場所と #deps 0 検査(スロットの外。ディレクトリ単位のロックだけは持っている)
+    # `#deps 0` の .obj のうち、本当に依存が欠落しているものだけを返す。
+    # システムヘッダだけを include する TU は ninja が(INCLUDE 配下を除外するため)正当に #deps 0 になる。
+    # ソースに `#include "..."`(プロジェクトヘッダ)がある obj だけを異常とみなす。
+    function Get-BrokenDepObjs($ninjaExe, $dir) {
+        $zero = @(& $ninjaExe -C $dir -t deps 2>$null | Where-Object { $_ -match '^(.+\.obj): #deps 0,.*\(VALID\)' -and $_ -notmatch '(^|[\/])_deps[\/]' } |   # .ddi(C++20 モジュール走査)の #deps 0 は正常なので .obj だけ。_deps/(外部ライブラリ)は対象外
+                  ForEach-Object { $Matches[1] })
+        foreach ($o in $zero) {
+            $src = & $ninjaExe -C $dir -t query $o 2>$null | Where-Object { $_ -match '^\s{4}(\S.*\.(cpp|cc|cxx|c))\s*$' } | Select-Object -First 1
+            if ($src -match '^\s{4}(\S.*)$') {
+                $sp = $Matches[1]
+                if (-not [IO.Path]::IsPathRooted($sp)) { $sp = Join-Path (Join-Path $root $dir) $sp }
+                if ((Test-Path -LiteralPath $sp) -and -not (Select-String -LiteralPath $sp -Pattern '^\s*#\s*include\s*"' -Quiet)) { continue }
+            }
+            $o
+        }
+    }
+
+    # `#deps 0` の obj を検出し、あれば一度だけ clean して再コンパイルさせる(次回以降は依存が正しく記録される)。
+    $cache = Join-Path (Join-Path $root $Dir) 'CMakeCache.txt'
+    $ninja = $null
+    if (Test-Path $cache) {
+        $m = Select-String -Path $cache -Pattern '^CMAKE_MAKE_PROGRAM:[A-Z]+=(.+)$' | Select-Object -First 1
+        if ($m) { $ninja = $m.Matches[0].Groups[1].Value.Trim() }
+    }
+    $depsSigBefore = Get-NinjaDepsSig $dirFull
+    if ($SlotProbe -le 0 -and $ninja -and (Test-Path $ninja)) {
+        try { (Get-Process -Id $PID).PriorityClass = 'BelowNormal' } catch {}
+        if (Test-DepsCheckNeeded $dirFull) {
+            $bad = @(Get-BrokenDepObjs $ninja $Dir)
+            if ($bad.Count -gt 0) {
+                Write-Host "[build] WARNING: $($bad.Count) objects have no header deps (#deps 0). cleaning them once so they rebuild with correct deps."
+                $bad | ForEach-Object -Begin { $batch = @() } -Process {
+                    $batch += $_
+                    if ($batch.Count -ge 50) { & $ninja -C $Dir -t clean @batch 2>$null | Out-Null; $batch = @() }
+                } -End { if ($batch.Count -gt 0) { & $ninja -C $Dir -t clean @batch 2>$null | Out-Null } }
+                $depsSigBefore = ''   # clean したので、ビルド後に必ず検査し直す
+            }
+        } else { Write-Host '[build] #deps check: skipped (.ninja_deps unchanged since the last clean check)' }
+    }
+
     # 1b. スロット取得: 1..N を WaitOne(0) で順に試す。k>=2 は空きメモリが足りるときだけ。3 秒ごとにポーリング
     for ($k = 1; $k -le $slotCount; $k++) {
         $name = if ($k -eq 1) { $slotPrefix } else { "$slotPrefix-$k" }
@@ -206,9 +253,8 @@ try {
         # vcvars64.bat が呼ぶ vswhere.exe は Installer ディレクトリが PATH に無いと「認識されていません」を出すので足しておく
         $vsInstaller = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer'
         if ((Test-Path $vsInstaller) -and ($env:PATH -notlike "*$vsInstaller*")) { $env:PATH = "$env:PATH;$vsInstaller" }
-        cmd /c "`"$vc`" >nul && set" | ForEach-Object {
-            if ($_ -match '^([^=]+)=(.*)$') { [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2]) }
-        }
+        $vr = Import-VcvarsEnv -VcPath $vc
+        Write-Host ("[build] vcvars64: {0} ({1:n1}s)" -f $(if ($vr.Hit) { 'cache hit' } else { 'loaded and cached' }), $vr.Seconds)
     }
     if (-not $env:VCPKG_ROOT) { $env:VCPKG_ROOT = Join-Path $env:USERPROFILE 'vcpkg' }
     # vcpkg のバイナリキャッシュは全 worktree で共通の固定パス(ninja の自動 re-configure にも効く)
@@ -242,41 +288,6 @@ try {
         }
     }
 
-    # `#deps 0` の .obj のうち、本当に依存が欠落しているものだけを返す。
-    # システムヘッダだけを include する TU は ninja が(INCLUDE 配下を除外するため)正当に #deps 0 になる。
-    # ソースに `#include "..."`(プロジェクトヘッダ)がある obj だけを異常とみなす。
-    function Get-BrokenDepObjs($ninjaExe, $dir) {
-        $zero = @(& $ninjaExe -C $dir -t deps 2>$null | Where-Object { $_ -match '^(.+\.obj): #deps 0,.*\(VALID\)' -and $_ -notmatch '(^|[\/])_deps[\/]' } |   # .ddi(C++20 モジュール走査)の #deps 0 は正常なので .obj だけ。_deps/(外部ライブラリ)は対象外
-                  ForEach-Object { $Matches[1] })
-        foreach ($o in $zero) {
-            $src = & $ninjaExe -C $dir -t query $o 2>$null | Where-Object { $_ -match '^\s{4}(\S.*\.(cpp|cc|cxx|c))\s*$' } | Select-Object -First 1
-            if ($src -match '^\s{4}(\S.*)$') {
-                $sp = $Matches[1]
-                if (-not [IO.Path]::IsPathRooted($sp)) { $sp = Join-Path (Join-Path $root $dir) $sp }
-                if ((Test-Path -LiteralPath $sp) -and -not (Select-String -LiteralPath $sp -Pattern '^\s*#\s*include\s*"' -Quiet)) { continue }
-            }
-            $o
-        }
-    }
-
-    # `#deps 0` の obj を検出し、あれば一度だけ clean して再コンパイルさせる(次回以降は依存が正しく記録される)。
-    $cache = Join-Path (Join-Path $root $Dir) 'CMakeCache.txt'
-    $ninja = $null
-    if (Test-Path $cache) {
-        $m = Select-String -Path $cache -Pattern '^CMAKE_MAKE_PROGRAM:[A-Z]+=(.+)$' | Select-Object -First 1
-        if ($m) { $ninja = $m.Matches[0].Groups[1].Value.Trim() }
-    }
-    if ($ninja -and (Test-Path $ninja)) {
-        $bad = @(Get-BrokenDepObjs $ninja $Dir)
-        if ($bad.Count -gt 0) {
-            Write-Host "[build] WARNING: $($bad.Count) objects have no header deps (#deps 0). cleaning them once so they rebuild with correct deps."
-            $bad | ForEach-Object -Begin { $batch = @() } -Process {
-                $batch += $_
-                if ($batch.Count -ge 50) { & $ninja -C $Dir -t clean @batch 2>$null | Out-Null; $batch = @() }
-            } -End { if ($batch.Count -gt 0) { & $ninja -C $Dir -t clean @batch 2>$null | Out-Null } }
-        }
-    }
-
     # --- 3a. DLSS の状態が前回の configure と違うときだけ構成し直す（UNO_ENABLE_DLSS と SDK の有無は configure で決まる）
     $dlssMarker = Join-Path (Join-Path $root $Dir) '.uno_dlss_configured'
     # 要求(-Dlss)も含めて記録する: ON / OFF:nosdk（SDK 無しで OFF）/ OFF:off（-Dlss off）
@@ -306,11 +317,18 @@ try {
     $code = $LASTEXITCODE
     if ($oldCp -match '^\d+$' -and $oldCp -ne '65001') { & cmd /c "chcp $oldCp>nul" }   # 呼び出し元のコンソール コードページを戻す
     Write-Host ("[build] {0} in {1:n1}s (exit {2})" -f ($(if ($code -eq 0) { 'OK' } else { 'FAILED' })), $bsw.Elapsed.TotalSeconds, $code)
-    # ビルド後に `#deps 0` の .obj の件数を表示する(0 が正常)
+    # スロットを先に手放す(以降の検査は読み取りだけ。他のビルドを待たせない。ディレクトリ単位のロックは finally まで持つ)
+    if ($slotGot -ne 0) { try { $slotMutexes[$slotGot - 1].ReleaseMutex() } catch {}; $slotGot = 0 }
+    # ビルド後に `#deps 0` の .obj の件数を表示する(0 が正常)。.ninja_deps が変わっていないなら前回の結果のまま
     if ($ninja -and (Test-Path $ninja)) {
-        $after = @(Get-BrokenDepObjs $ninja $Dir)
-        if ($after.Count -gt 0) { Write-Host "[build] WARNING: #deps 0 objects after build: $($after.Count) (configure/build codepage mismatch?)" }
-        else { Write-Host "[build] #deps 0 objects: 0" }
+        $depsSigAfter = Get-NinjaDepsSig $dirFull
+        if ($depsSigBefore -and $depsSigAfter -eq $depsSigBefore -and (Read-DepsCheckStamp $dirFull) -eq $depsSigAfter) {
+            Write-Host "[build] #deps 0 objects: 0 (unchanged)"
+        } else {
+            $after = @(Get-BrokenDepObjs $ninja $Dir)
+            if ($after.Count -gt 0) { Write-Host "[build] WARNING: #deps 0 objects after build: $($after.Count) (configure/build codepage mismatch?)" }
+            else { Write-Host "[build] #deps 0 objects: 0"; Write-DepsCheckStamp $dirFull $depsSigAfter }
+        }
     }
     # --- 5. DLSS の結果表示（成功したときだけ。出力に実際に nvngx_dlss.dll があるかを見る）
     if ($code -eq 0) {

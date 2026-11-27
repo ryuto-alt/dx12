@@ -18,7 +18,7 @@ from mathutils import Matrix, Vector
 
 # このファイルの場所から決める（exec で読んだときは __file__ が無いので既定の場所）
 ART = (os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals()
-       else r"C:\Users\ryuto\Documents\dx12\hardware\lab\art\grove_kart")
+       else os.getcwd())
 LAYOUT = os.path.join(ART, "..", "..", "GroveLab", "assets", "kart", "layout.json")
 MIRROR = False
 

@@ -4,7 +4,7 @@ rem ASan 計装ビルド(vcpkg 依存 = imgui 含めて全部 /fsanitize=address
 rem 通常の build/asan と違い「imgui 内部の域外アクセス」も検出できる。
 rem 実行時: ASAN_OPTIONS は ':' 区切りのため log_path はドライブレター不可(cwd 相対にする)。
 rem 例: set ASAN_OPTIONS=continue_on_error=1:halt_on_error=0:log_path=asan_report
-set "VCPKG_ROOT=C:\Users\ryuto\vcpkg"
+if not defined VCPKG_ROOT set "VCPKG_ROOT=%USERPROFILE%\vcpkg"
 call "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
 cd /d "%~dp0"
 powershell -ExecutionPolicy Bypass -File tools/gen_asset_key.ps1 || exit /b 1

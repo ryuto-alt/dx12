@@ -1,6 +1,6 @@
 # 仮想ジオメトリ（Nanite 風）設計書
 
-- 対象: 自作 DX12 エンジン（`C:\Users\ryuto\Documents\dx12` / ブランチ `feat_develop`）
+- 対象: 自作 DX12 エンジン（`<リポジトリのルート>` / ブランチ `feat_develop`）
 - 作成: 2026-09-29 / 状態: **設計のみ（エンジンのソースは 1 行も変更していない）**
 - 基準機: RTX 5060（8 GB）/ 1080p / 60 fps / 可視 5000 万 tri 級シーン
 - 表記: **[事実]** = 実コードを読んで確認（`ファイル:行`付き）/ **[設計]** = 本書の決定 / **[推定]** = 未計測の見積もり（P2〜P4 の実測で差し替える）
@@ -961,8 +961,8 @@ P0 ─┬─→ P1 ────────────┐
 
 #### P6 UE アセット cook（C#、10 日）
 
-- **(a) 成果物**: `tools/ue-cook/`（net10 / CUE4Parse。**Dead Mall 抽出で使った環境をそのまま使う**: `C:\Users\ryuto\.dotnet10`、`EGame.GAME_UE5_6`、jmap の `.usmap`。memory `dreamcore-dead-mall`）。`.pak` / `.utoc` → `UStaticMesh`（LOD0 / Nanite）→ **VGSRC**（座標変換 UE→エンジン）、テクスチャは UE がcook 済みの BC7 / BC5 / BC1 を**再圧縮せず DDS へパススルー**、マテリアルは基本 PBR 4 スロットへ写像、配置は `WorldDto` → シーン JSON（Dead Mall 抽出の延長）。**冒頭 3 日のスパイク**: Nanite cook 済みメッシュのフルレゾ三角形を CUE4Parse で復元できるか（cook 済み UE パッケージには通常 LOD のフォールバック低ポリと Nanite ストリーミングページしか無い。CUE4Parse に Nanite ページのデコーダがあるか、UE5.6 のページ形式変更に追随できるかを調べる）。
-  - 縮退案: (A) Nanite 化されていないメッシュ + Nanite のフォールバックメッシュだけを対象にする（低忠実度）/ (B) `C:\Users\ryuto\Documents\Unreal Projects` 等の**エディタ側**でソースメッシュを FBX / OBJ にエクスポート（Python）→ assimp 経路。
+- **(a) 成果物**: `tools/ue-cook/`（net10 / CUE4Parse。**Dead Mall 抽出で使った環境をそのまま使う**: `%USERPROFILE%\.dotnet10`、`EGame.GAME_UE5_6`、jmap の `.usmap`。memory `dreamcore-dead-mall`）。`.pak` / `.utoc` → `UStaticMesh`（LOD0 / Nanite）→ **VGSRC**（座標変換 UE→エンジン）、テクスチャは UE がcook 済みの BC7 / BC5 / BC1 を**再圧縮せず DDS へパススルー**、マテリアルは基本 PBR 4 スロットへ写像、配置は `WorldDto` → シーン JSON（Dead Mall 抽出の延長）。**冒頭 3 日のスパイク**: Nanite cook 済みメッシュのフルレゾ三角形を CUE4Parse で復元できるか（cook 済み UE パッケージには通常 LOD のフォールバック低ポリと Nanite ストリーミングページしか無い。CUE4Parse に Nanite ページのデコーダがあるか、UE5.6 のページ形式変更に追随できるかを調べる）。
+  - 縮退案: (A) Nanite 化されていないメッシュ + Nanite のフォールバックメッシュだけを対象にする（低忠実度）/ (B) `ドキュメント配下の Unreal Projects` 等の**エディタ側**でソースメッシュを FBX / OBJ にエクスポート（Python）→ assimp 経路。
 - **(b) 依存**: P0（VGSRC 契約）。E2E 検証は P1 の CLI。
 - **(c) 工数**: 10 日（スパイク 3 + 実装 7）。
 - **(d) 合否**:

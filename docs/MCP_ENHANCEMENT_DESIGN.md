@@ -30,7 +30,7 @@
 
 ## 1. 現行構造の事実（実コード確認）
 
-以降の `path:line` は 2026-09-30 時点の作業ツリー（`C:\Users\ryuto\Documents\dx12`）。ツール数・サイズは、`node index.ts` を stdio で起動して `initialize` + `tools/list` を送る方法（エンジン不要・エディタ非起動）で**実測**した値。
+以降の `path:line` は 2026-09-30 時点の作業ツリー（`<リポジトリのルート>`）。ツール数・サイズは、`node index.ts` を stdio で起動して `initialize` + `tools/list` を送る方法（エンジン不要・エディタ非起動）で**実測**した値。
 
 ### 1.1 三層構造と実測サイズ
 

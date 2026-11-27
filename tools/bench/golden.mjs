@@ -46,6 +46,7 @@ import { REPO_ROOT, findDefaultExe, resolveProject, launchEngine, launchInstance
 import { parseArgs, selectScenes } from "./lib/sceneSelect.mjs";
 import { loadGoldenEntries, loadBaseline, writeBaselineEntries } from "./lib/goldenStore.mjs";
 import { sha256, resampleArea, compareImages, judge, DEFAULT_TOLERANCE } from "./lib/imageDiff.mjs";
+import { acquireSlot } from "../lib/slotLock.mjs";
 
 export { sha256, resampleArea, compareImages, judge, DEFAULT_TOLERANCE };
 
@@ -469,5 +470,14 @@ async function main() {
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
-  main().then((code) => process.exit(code), (e) => { console.error(e); process.exit(1); });
+  // GPU の枠(Global\dx12-gpu。docs/AGENT_KIT.md)を取ってから回す。DX12_SLOTS_DISABLE=1 で従来どおり。
+  // 枠は process.env に印を立てるので、launchInstance が起動する engine_instance.ps1 は二重に取らない。
+  const wantsHelp = process.argv.includes("--help") || process.argv.includes("-h");
+  (async () => {
+    const slot = wantsHelp ? { release() {} } : await acquireSlot("gpu", { label: "golden.mjs" }).catch((e) => {
+      if (e.code === "SLOT_TIMEOUT") { console.error(`[golden] ${e.message}`); process.exit(3); }
+      throw e;
+    });
+    try { return await main(); } finally { slot.release(); }
+  })().then((code) => process.exit(code), (e) => { console.error(e); process.exit(1); });
 }

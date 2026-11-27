@@ -1,6 +1,6 @@
 # マテリアルグラフ（ノードベースのマテリアルエディタ）設計書
 
-- 対象: 自作 DX12 エンジン「Uno Engine」（`C:\Users\ryuto\Documents\dx12` / ブランチ `feat_develop`）
+- 対象: 自作 DX12 エンジン「Uno Engine」（`<リポジトリのルート>` / ブランチ `feat_develop`）
 - 作成: 2026-09-30 / 状態: **設計のみ（エンジンのソースは 1 行も変更していない。ビルド・エディタ起動・git 操作もしていない）**
 - 基準機: RTX 5060（8 GB）/ 1080p / 60 fps（`docs/VIRTUAL_GEOMETRY_DESIGN.md` と同じ）
 - 表記: **[事実]** = 実コードを読んで確認（`ファイル:行` 付き）/ **[設計]** = 本書の決定 / **[推定]** = 未計測の見積もり（G2c 等の実測で差し替える）/ **[外部]** = Web で確認した外部情報 / **[記憶]** = 記憶ベースで未確認（着手時に必ず裏取りする）
@@ -512,7 +512,7 @@ void UnoMatEval(UnoMatInput mi, UnoMatPool pool, out UnoSurface s)
 - **cook 済みパッケージ**（Steam 版 Dreamcore 等）には式ノードのグラフが残らない。実際に Dead Mall の抽出で「マテリアルグラフは cook 時に落ちている。単色マテリアル（約 4 割）は色そのものが取り出せない」と確認済み [事実: memory `dreamcore-dead-mall` §「移植で必ず踏む 4 つ」#4]。取れるのは `UMaterialInstanceConstant` の**パラメータ値・親チェーン・参照テクスチャ**（`CachedExpressionData` 系）まで [記憶: 着手時に CUE4Parse のクラスで確認]。
 - **未 cook**（UE エディタのプロジェクトの `.uasset`。`Documents\Unreal Projects` が VG 設計書 P6 でも言及されている）には `UMaterial.Expressions`（`MaterialExpression*` の配列）が**残っている** [記憶]。読み出しは cook 済みと違い unversioned properties でなく tagged properties なので `.usmap` 無しで読める可能性が高い [記憶]。
 
-→ **取り込みは 3 段（T0 → T1 → T2）**で設計する。環境は VG 設計書 P6 と共通（`tools/ue-cook/`、net10 / CUE4Parse、`C:\Users\ryuto\.dotnet10`、`EGame.GAME_UE5_6`、jmap の `.usmap`）。
+→ **取り込みは 3 段（T0 → T1 → T2）**で設計する。環境は VG 設計書 P6 と共通（`tools/ue-cook/`、net10 / CUE4Parse、`%USERPROFILE%\.dotnet10`、`EGame.GAME_UE5_6`、jmap の `.usmap`）。
 
 ### 5.2 T0: インスタンス + パラメータ + テクスチャ（最初にやる。cook 済みでも可）
 

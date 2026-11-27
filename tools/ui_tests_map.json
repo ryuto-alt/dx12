@@ -1,0 +1,9 @@
+{
+  "_comment": "run_ui_tests.ps1 -Auto の対応表。fullPattern に合う変更があれば全件。rules は pattern -> only(テスト名)/categories。smoke は常に足す最小の 1 本。パネル名(XxxPanel.cpp)は、テスト名とテスト本体の文字列からの一致で自動で選ぶ。",
+  "smoke": ["open_all_tool_windows"],
+  "rules": [
+    { "pattern": "^src/editor/panels/(Hierarchy|Outliner)", "only": ["hierarchy_click_all", "spawn_all_types"] },
+    { "pattern": "^src/editor/panels/Inspector", "only": ["inspector_open_all", "add_all_components"] },
+    { "pattern": "^src/editor/(Undo|EditorCommands)", "only": ["undo_redo", "edit_menu_ops"] }
+  ]
+}

@@ -11,7 +11,7 @@
 
 | もの | 場所 / 入手 |
 |---|---|
-| .NET 10 SDK | `C:\Users\ryuto\.dotnet10`（ローカル導入済み。最新 CUE4Parse は net10.0 必須）|
+| .NET 10 SDK | `%USERPROFILE%\.dotnet10`（ローカル導入済み。最新 CUE4Parse は net10.0 必須）|
 | CUE4Parse / CUE4Parse-Conversion | NuGet `1.2.2.202609`（`UeCook.csproj`。復元は自動）|
 | `.usmap`（型マッピング）| UE5.6 の cook 済みパッケージは unversioned properties なので **必須**。下の「usmap の作り方」|
 | Python 3 + `capstone`（usmap を exe から作る場合のみ）| `pip install capstone` |
@@ -19,7 +19,7 @@
 ## ビルド
 
 ```
-$env:PATH = "C:\Users\ryuto\.dotnet10;$env:PATH"
+$env:PATH = "$env:USERPROFILE\.dotnet10;$env:PATH"
 cd tools\ue_cook
 dotnet build -c Release          # → bin\Release\net10.0\ue_cook.dll
 ```

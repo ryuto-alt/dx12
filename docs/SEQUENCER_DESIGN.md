@@ -3,7 +3,7 @@
 - 対象: 新規 `src/sequencer/`（評価コア）、`src/editor/panels/SequencerPanel.*`（UI）、`src/core/Application*.cpp`（駆動・適用・出力）、`src/core/mcp/*` と `tools/mcp-server`（MCP）
 - 作成: 2026-09-30 / 状態: **調査と設計のみ**（エンジンのソース変更・ビルド・エディタ起動・git 操作は一切していない。読んだのはソース・docs・テストだけ）
 - 関連: `docs/MCP_ENHANCEMENT_DESIGN.md`（MCP の面・エラー封筒・`apply_scene_spec` の作法を踏襲）/ `docs/ANIMATION.md` / `docs/EFFECT_RECIPES.md` / `docs/MCP.md`
-- 表記: `path:line` は 2026-09-30 の作業ツリーで確認した値（パスは `C:\Users\ryuto\Documents\dx12` 起点）。「目標」は設計上の数値で**未実測**。「未確認」は読み切れていない項目で、憶測で埋めていない。
+- 表記: `path:line` は 2026-09-30 の作業ツリーで確認した値（パスは `<リポジトリのルート>` 起点）。「目標」は設計上の数値で**未実測**。「未確認」は読み切れていない項目で、憶測で埋めていない。
 - 用語: 「バインディング」= シーケンス内のトラック群が指す対象（主にエンティティ）への参照。「PreAnimatedState」= シーケンサーが書き換える前の値の退避（UE の同名の仕組みに倣う）。
 
 ---

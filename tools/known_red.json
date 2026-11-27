@@ -1,0 +1,5 @@
+{
+  "_comment": "既知の赤(統合担当が更新する)。ctest.ps1 / run_ui_tests.ps1 は、ここに載っていて期限内のテストだけが赤のとき、新しい赤とは数えない。各項目は {name, reason, lane, expires(YYYY-MM-DD)}。期限が切れたものは新しい赤として扱う。直ったテストは実行結果に『remove from known_red』と出るので消す。統合とゲートの全件確認は -StrictRed で無視して回す。",
+  "ctest": [],
+  "ui": []
+}

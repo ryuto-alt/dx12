@@ -81,7 +81,25 @@ function selfTest() {
   return 0;
 }
 
-function main() {
+// テストの枠(Global\dx12-test。tools/lib/slotLock.mjs)。リポジトリ内(tools/mcp-server)から呼ばれたときだけ取る。
+// dx12-mcp へ単体で同期された先には ../../lib が無いので、import に失敗したら枠なしで進む。--no-slot / DX12_SLOTS_DISABLE=1 でも枠なし。
+async function acquireTestSlot(args) {
+  if (args.includes("--no-slot") || process.env.DX12_SLOTS_DISABLE === "1") return { slot: null };
+  let mod;
+  try {
+    mod = await import(new URL("../../lib/slotLock.mjs", import.meta.url).href);
+  } catch {
+    return { slot: null };
+  }
+  try {
+    return { slot: await mod.acquireSlot("test", { label: "mcp-server npm test" }) };
+  } catch (e) {
+    if (e?.code === "SLOT_TIMEOUT") return { code: 3, msg: "テストの枠が空かなかった(終了コード 3 = あとでもう一度。長く待つなら DX12_SLOT_WAIT_MIN)" };
+    return { slot: null };   // 枠の仕組み自体が動かない(pwsh が無い等)ときはテストを止めない
+  }
+}
+
+async function main() {
   const args = process.argv.slice(2);
   if (args.includes("--self-test")) return selfTest();
   const offline = args.includes("--offline");
@@ -92,13 +110,19 @@ function main() {
     for (const t of tests) console.log(t);
     return 0;
   }
-  for (const t of tests) {
-    console.log(`\n=== node ${t} ===`);
-    const r = spawnSync(process.execPath, [t], { cwd: root, stdio: "inherit" });
-    if (r.status !== 0) {
-      console.error(`\nFAILED: ${t} (exit ${r.status ?? r.signal})`);
-      return r.status || 1;
+  const got = await acquireTestSlot(args);
+  if (got.code) { console.error(got.msg); return got.code; }
+  try {
+    for (const t of tests) {
+      console.log(`\n=== node ${t} ===`);
+      const r = spawnSync(process.execPath, [t], { cwd: root, stdio: "inherit" });
+      if (r.status !== 0) {
+        console.error(`\nFAILED: ${t} (exit ${r.status ?? r.signal})`);
+        return r.status || 1;
+      }
     }
+  } finally {
+    got.slot?.release();
   }
   console.log(`\nOK: ${tests.length} test files`);
   return 0;
@@ -106,7 +130,7 @@ function main() {
 
 // 起動方法（junction / subst / シンボリックリンク経由でも）に関わらず必ず走らせる。import 先は無い。
 try {
-  process.exitCode = main();
+  process.exitCode = await main();
 } catch (e) {
   console.error(String(e?.message ?? e));
   process.exitCode = 2;

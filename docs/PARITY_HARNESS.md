@@ -191,8 +191,8 @@ pwsh tools\parity\parity.ps1 run tools\parity\scenes\smoke_generated.json --stag
 
 ```
 dx12_call_guarded {name:"dx12_job_start", args:{kind:"external", args:{
-  command:["C:\\Users\\ryuto\\Documents\\dx12\\tools\\parity\\.venv\\Scripts\\python.exe","-m","parity","run",
-           "C:\\Users\\ryuto\\Documents\\dx12\\tools\\parity\\scenes\\smoke_generated.json","--stage","G1","--progress"],
+  command:["<リポジトリのルート>\\tools\\parity\\.venv\\Scripts\\python.exe","-m","parity","run",
+           "<リポジトリのルート>\\tools\\parity\\scenes\\smoke_generated.json","--stage","G1","--progress"],
   cwd:"tools/parity", progress:"protocol"}}}
 ```
 

@@ -64,12 +64,9 @@ def check(path: Path) -> bool:
 def main() -> int:
     if hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(encoding='utf-8')
-    # 既定は環境変数 DX12_SPLASH_SYNC_DIR。無ければ引数必須（個人パスは置かない）
+    # 引数 → 環境変数 DX12_SPLASH_SYNC_DIR → リポジトリの build/splash_plots の順（個人パスは置かない）
     arg = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("DX12_SPLASH_SYNC_DIR")
-    if not arg:
-        print("使い方: check_splash_sync.py <sync_*.wav のあるフォルダ>（または環境変数 DX12_SPLASH_SYNC_DIR）")
-        return 2
-    d = Path(arg)
+    d = Path(arg) if arg else Path(__file__).resolve().parent.parent / "build" / "splash_plots"
     files = sorted(d.glob("sync_*.wav"))
     if not files:
         print("sync_*.wav がありません（SplashSyncDump を先に実行）")

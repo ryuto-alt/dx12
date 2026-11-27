@@ -208,12 +208,35 @@ function stealStale(file) {
   try { fs.rmSync(moved, { force: true }); } catch { /* 無視 */ }
 }
 function pidAlive(pid) { try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; } }
-/** 排他で取る。古い（持ち主の PID が居ない）ロックは奪う。waitSec 秒まで待つ。取れたら解放関数、だめなら null。 */
-export async function acquireGpuWindow({ file = LOCK_FILE, waitSec = 0, owner = "baseline_perf", pollMs = 2000 } = {}) {
+/** GPU の枠(tools/lib/SlotLock.psm1。golden / UI テスト / engine_instance / ctest -Gpu)を持っているプロセスのマーカー
+ *  (%TEMP%\uno-gpu-slot-holders\<pid>-<slot>.json)のうち、生きているものの pid。自分が枠の中(DX12_SLOT_HELD_GPU)なら見ない。 */
+export function liveGpuSlotHolders(dir = process.env.DX12_GPU_MARKER_DIR || path.join(os.tmpdir(), "uno-gpu-slot-holders")) {
+  if (process.env.DX12_SLOTS_DISABLE === "1" || /^\d+$/.test(process.env.DX12_SLOT_HELD_GPU ?? "")) return [];
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch { return []; }
+  const live = [];
+  for (const n of names) {
+    const f = path.join(dir, n);
+    let pid = 0;
+    try { pid = Number(JSON.parse(fs.readFileSync(f, "utf8").replace(/^﻿/, "")).pid); } catch { /* 書き込み途中か壊れ */ }
+    if (Number.isInteger(pid) && pid > 0 && pid !== process.pid && pidAlive(pid)) live.push(pid);
+    else if (pid > 0) { try { fs.rmSync(f, { force: true }); } catch { /* 無視 */ } }
+  }
+  return live;
+}
+/** 排他で取る。古い（持ち主の PID が居ない）ロックは奪う。waitSec 秒まで待つ。取れたら解放関数、だめなら null。
+ *  窓を取った「あとで」GPU 枠のマーカーを見る(枠の側は「マーカー → 窓」の順に見るので、どちらかが必ず相手に気づく)。生きたマーカーがあれば窓を返して待つ。 */
+export async function acquireGpuWindow({ file = LOCK_FILE, waitSec = 0, owner = "baseline_perf", pollMs = 2000, markerDir } = {}) {
   const t0 = Date.now();
   for (;;) {
     try {
       fs.writeFileSync(file, JSON.stringify({ pid: process.pid, owner, startedAt: new Date().toISOString() }), { flag: "wx" });
+      if (liveGpuSlotHolders(markerDir).length > 0) {
+        try { fs.rmSync(file, { force: true }); } catch { /* 無視 */ }
+        if (Date.now() - t0 >= waitSec * 1000) return null;
+        await sleep(pollMs);
+        continue;
+      }
       let released = false;
       const release = () => { if (released) return; released = true; try { fs.rmSync(file, { force: true }); } catch { /* 無視 */ } };
       process.once("exit", release);

@@ -31,9 +31,9 @@
 |---|---|
 | ゲーム | Steam 版 Dreamcore（UE 5.6）。`C:\Program Files (x86)\Steam\steamapps\common\Dreamcore` |
 | CUE4Parse | NuGet `1.2.2.202609`（コミット `b4e95441`、2026-09-01 ビルド。net10.0 必須）。ソース調査用に GitHub `HEAD 28f385e6`（2026-09-27）も読んだ |
-| .NET | `C:\Users\ryuto\.dotnet10`（.NET 10.0.401）|
+| .NET | `%USERPROFILE%\.dotnet10`（.NET 10.0.401）|
 | バージョン指定 | `EGame.GAME_UE5_6`（5.5 以下だとパッケージ側で読み取り失敗。memory `dreamcore-dead-mall`）。AES 鍵は無し（ゼロ鍵）|
-| `.usmap` | **手元に無かった**（過去のスクラッチパッドと共に消滅。`C:\Users\ryuto` と `D:\` を再帰検索して 0 件）。ゲーム起動が禁止なので、**exe から静的に作った**（§2.3）|
+| `.usmap` | **手元に無かった**（過去のスクラッチパッドと共に消滅。ユーザーフォルダと `D:\` を再帰検索して 0 件）。ゲーム起動が禁止なので、**exe から静的に作った**（§2.3）|
 | 優先度 / メモリ | プロセスは `BelowNormal`。ワーキングセット上限 8 GB（実測ピークは最大 290 MB）|
 
 ---
@@ -233,7 +233,7 @@ P6 は P0 だけに依存（E2E の最後だけ P1 待ち）。**クリティカ
 
 ```
 # ビルド
-$env:PATH = "C:\Users\ryuto\.dotnet10;$env:PATH"; cd tools\ue_cook; dotnet build -c Release
+$env:PATH = "$env:USERPROFILE\.dotnet10;$env:PATH"; cd tools\ue_cook; dotnet build -c Release
 
 # usmap（ゲーム起動なし・StaticMesh 系のみ）
 python scripts\static_usmap.py "<...>\Dreamcore\Binaries\Win64\Dreamcore-Win64-Shipping.exe" out\Dreamcore_static.usmap

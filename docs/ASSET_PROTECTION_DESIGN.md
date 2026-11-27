@@ -4,7 +4,7 @@ Status: design spec, ready to implement.
 Author: architect (synthesized from web research + codebase load-point map).
 Audience: an engineer with the repo open and no other context.
 
-Repo root: `C:/Users/ryuto/Documents/GitHub/dx12`. C++20, `namespace dx12e`, `/W4 /WX`,
+Repo root: `<リポジトリのルート>`. C++20, `namespace dx12e`, `/W4 /WX`,
 VS2022 + Ninja, vcpkg. Builds Debug AND Release. ONE exe today is both editor and game.
 
 This document covers two deliverables that are implemented together:

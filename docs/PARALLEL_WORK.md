@@ -74,6 +74,10 @@ worktree 側には入らない(本体で追加・再インストールしてか�
   - 既定は `-LE "^(gpu|ui)$"`。ラベルは小文字(`gpu` / `ui` / `dxc`)。
   - `-Gpu` で GPU テスト、`-Ui` で UI テスト(エンジンを起動する)を含める。**オーナーの離席中か、メインの指示があるときだけ**。
   - `-R <正規表現>` / `-N`(一覧だけ)。
+  - `-Changed [-Base ref]`: 変更に関係するテストだけ(項目の途中の確認用。統合とゲートは全件)。`known_red.json` の既知の赤は新しい赤と分けて出す。
+- **GPU とテストの枠**: GPU を使う処理(`golden.mjs`、`run_ui_tests.ps1`、`engine_instance.ps1`、`ctest.ps1 -Gpu/-Ui`)は `Global\dx12-gpu`、
+  CPU のテスト(`ctest.ps1`、npm test)は `Global\dx12-test` の枠を取る。昼は各 1 本、離席中は増える。エンジンは使い終わったらすぐ止める。
+  1 本のコマンドで回す道具は `pwsh tools/kit.ps1`。詳細は [`docs/AGENT_KIT.md`](AGENT_KIT.md)。
 - デバイスを作るテスト(`D3D12CreateDevice` / `GraphicsDevice` を使う)には必ず `LABELS gpu` を付ける。`GpuLabelLint` が検査する。
 - 常に登録される検査(`tests/CMakeLists.txt` の lane-A ブロック。リポジトリのルートは `DX12_REPO_ROOT`。
   CI は `cmake -S tests` で単独構成するので `CMAKE_SOURCE_DIR` を使わない): `GpuLabelLint`、`NoPaidApi`(有料 API の SDK とキーの参照が無いこと。

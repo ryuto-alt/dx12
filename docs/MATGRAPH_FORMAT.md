@@ -1,6 +1,6 @@
 # マテリアルグラフ G1 仕様（`.dxmg`・型規則・コード生成・スロット表）
 
-- 対象: Uno Engine（`C:\Users\ryuto\Documents\dx12` / ブランチ `feat_develop`）
+- 対象: Uno Engine（`<リポジトリのルート>` / ブランチ `feat_develop`）
 - 実装: `src/renderer/matgraph/`（標準ライブラリ + nlohmann-json だけの純ロジック。GPU / D3D / ImGui 非依存）
 - 上位の設計: `docs/MATERIAL_GRAPH_DESIGN.md`（§3 コード生成・§4 データ・§7 G1）。本書は G1 で確定した**実装仕様**で、設計書と食い違う点は本書が正。
 - テスト: `tests/matgraph_test.cpp`（純ロジック）/ `tests/matgraph_dxc_test.cpp`（DXC + WARP。ctest ラベル `dxc`）/ `tests/data/matgraph/`（ゴールデン）
