@@ -17,6 +17,39 @@
 // ==== lane-D end ====
 
 v.push_back(Release{
+    "3.0.0-pre", "2026-11-27",
+    "エディタを Graphite Gauge に一新し、品質プリセット・Epic の太陽影・UnoFX の VFX 核を加えたプレリリースです",
+    {
+        { "Graphite Gauge テーマと IBM Plex 書体",
+          "エディタの既定が計器盤風の Graphite Gauge になり、書体は IBM Plex です。旧テーマ（ネオン）にもいつでも戻せます。",
+          "コマンドパレットの「テーマ: ネオン（旧）」で戻せます。選んだテーマは保存され、次の起動でも使われます。",
+          "editor" },
+        { "起動アニメーションと Calibrate の音",
+          "起動画面が計器の校正を描くアニメーションになり、音が主時計として画面と同期します。図番は UN-3.0.0-pre です。",
+          "",
+          "general" },
+        { "品質プリセットと Epic の太陽影",
+          "ビューポート帯の「品質」から Epic などを選べます。Epic は 2048 の動的カスケード影で、シーンのルックとライティング・プリセットも一本になりました。",
+          "",
+          "lighting" },
+        { "UnoFX の VFX 核と焚き火・松明",
+          "VFX の新しい核 UnoFX が入り、焚き火・松明・火の粉・火花のプリセットを使えます。MCP からも操作できます。",
+          "",
+          "world" },
+    },
+    {
+        { K::Feature, "テーマ Graphite Gauge（既定）", "計器のクロム、製図ペンのアイコン、IBM Plex 書体を採用" },
+        { K::Feature, "起動アニメーション", "校正の振り付けと Calibrate の音を同期。表題欄に図番を表示" },
+        { K::Feature, "品質プリセット", "ビューポート帯のドロップダウンと MCP から切り替え" },
+        { K::Feature, "UnoFX と焚き火・松明のプリセット", "p_campfire などを追加。vfx_stats に GPU 初期化の失敗を表示" },
+        { K::Feature, "showcase SC-1「校正の庭」", "MCP だけで組んだサンプルシーンと 3 視点のゴールデン" },
+        { K::Feature, "MCP の拡張", "freeze_time / frame_step、品質プリセット、new_scene の profile など" },
+        { K::Improvement, "診断と計測", "Agility SDK 1.620、DRED、GPU タイマーを導入" },
+        { K::Fix, "データ消失の修正", "Epic の影の設定の保存、保存済み判定の指紋、シーンの読み書きを見直しました" },
+    },
+});
+
+v.push_back(Release{
     "2.6.1", "2026-11-16",
     "インストーラに Uno Lab 用の リバース SSH トンネルのランチャー（Start-UnoLabTunnel.ps1）を同梱しました",
     {

@@ -4,7 +4,7 @@
 ; ビルド: pwsh installer\build.ps1（cmake\agility.lock.json の版を /DAgilityVersion で渡す。ISCC を直接呼ぶときは /DAgilityVersion=<SDK 版> も要る。/DMyAppVersion=0.5.1 で版を上書き可）
 
 #ifndef MyAppVersion
-  #define MyAppVersion "0.5.2"
+  #define MyAppVersion "3.0.0-pre"
 #endif
 #define MyAppName "Uno Engine"
 #define MyAppPublisher "ryuto-alt"

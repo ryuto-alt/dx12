@@ -128,8 +128,10 @@ std::vector<std::string> Validate(const std::vector<Release>& all)
 {
     std::vector<std::string> err;
     if (all.empty()) err.push_back("リリースが 1 件もありません");
-    auto validSemver = [](const std::string& s)
+    auto validSemver = [](const std::string& full)
     {
+        // プレリリースの接尾辞（"3.0.0-pre" の "-pre"）は許す。数字の部分だけを X.Y.Z として見る。
+        const std::string s = full.substr(0, full.find('-'));
         int dots = 0;
         if (s.empty() || s.front() == '.' || s.back() == '.') return false;
         for (size_t i = 0; i < s.size(); ++i)

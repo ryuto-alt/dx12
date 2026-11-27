@@ -31,7 +31,7 @@ $srcDir   = if ($SrcDir) { $SrcDir } else { Join-Path $repoRoot "build\release" 
 $outDir   = Join-Path $here "output"
 
 # --- バージョンを Version.cpp から取得（定数の実体は Version.cpp に一本化した） ---
-$verLine = Select-String -Path (Join-Path $repoRoot "src\core\Version.cpp") -Pattern 'kEngineVersion\s*=\s*"([0-9.]+)"'
+$verLine = Select-String -Path (Join-Path $repoRoot "src\core\Version.cpp") -Pattern 'kEngineVersion\s*=\s*"([0-9.]+(-[A-Za-z0-9.]+)?)"'
 if (-not $verLine) { Write-Error "Version.cpp から kEngineVersion を取得できませんでした" }
 $version = $verLine.Matches[0].Groups[1].Value
 Write-Host "Uno Engine v$version の配布物をビルドします" -ForegroundColor Cyan
