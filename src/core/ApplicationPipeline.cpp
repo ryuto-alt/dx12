@@ -113,6 +113,7 @@ static std::wstring FwdPsName(bool physical, const wchar_t* normal, const wchar_
 // Application.h は W1 では凍結なので、メンバにせずこの TU の中に持つ（Application は 1 個しか無い）。
 // 切り替えは AppAccess::UpdateShadingRevision（Run ループの先頭 = フレーム外）だけが行う。既存シーンは V1 のまま＝既定の経路は 1 バイトも変わらない。
 static u8  s_shadingRevApplied = 1;
+static bool s_v2Degraded[3]    = {false, false, false};   // [0]=フォワード（MASK 含む）[1]=スキンド [2]=地形: V2 要求なのに V1 へ縮退した（W1-C6 のバイアス判定）
 static int s_v2PsoCount[3]     = {0, 0, 0};   // [0] = フォワード（静的）、[1] = スキンド、[2] = 地形
 
 // V2 のときは V2 の .cso（*V2_PS.cso）を選ぶ。無ければ（ビルドし忘れ）警告して V1 へ縮退する。*usedV2 は V2 を選べたかどうか。
@@ -268,6 +269,7 @@ void Application::RecreateForwardPsos()
     auto cnt = [](const std::unique_ptr<PipelineState>& p) { return (p && p->Get()) ? 1 : 0; };
     s_v2PsoCount[0] = (v2Ps ? cnt(m_pipelineState) + cnt(m_pipelineStateLEqual) + cnt(m_pipelineStateInst) + cnt(m_pipelineStateInstLEqual) + cnt(m_pipelineStateBlend) : 0)
                     + (v2PsMask ? cnt(m_pipelineStateMask) + cnt(m_pipelineStateMaskLEqual) + cnt(m_pipelineStateInstMask) + cnt(m_pipelineStateInstMaskLEqual) : 0);
+    s_v2Degraded[0] = v2 && !(v2Ps && v2PsMask);
     if (v2) Logger::Info("shadingRevision=2: フォワードの V2 PSO {} 本（PS: {} / MASK PS: {}）", s_v2PsoCount[0], v2Ps ? "V2" : "V1 に縮退", v2PsMask ? "V2" : "V1 に縮退");
 }
 
@@ -340,6 +342,7 @@ void Application::RecreateSkinnedPsos()
     auto cnt = [](const std::unique_ptr<PipelineState>& p) { return (p && p->Get()) ? 1 : 0; };
     s_v2PsoCount[1] = (v2Ps ? cnt(m_skinnedPipelineState) + cnt(m_skinnedPipelineStateLEqual) + cnt(m_skinnedPipelineStateBlend) : 0)
                     + (v2PsMask ? cnt(m_skinnedPipelineStateMask) + cnt(m_skinnedPipelineStateMaskLEqual) : 0);
+    s_v2Degraded[1] = v2 && !(v2Ps && v2PsMask);
     if (v2) Logger::Info("shadingRevision=2: スキンドの V2 PSO {} 本", s_v2PsoCount[1]);
 }
 
@@ -380,6 +383,7 @@ void Application::RecreateTerrainPsos()
     {
         // .cso が無い＝ビルドし忘れ。地形は layerSetPath 空なら従来経路で描けるので致命ではない。
         Logger::Warn("Terrain_VS/PS.cso が読めません（地形スプラットは無効。従来経路で描画します）");
+        s_v2Degraded[2] = false;   // .cso が無い＝地形は描かない（縮退ではない）
         s_v2PsoCount[2] = 0;   // 古い値を残さない（get_shading の v2Pso が嘘になる）
         return;
     }
@@ -403,6 +407,7 @@ void Application::RecreateTerrainPsos()
     m_terrainPipelineStateLEqual->Initialize(*m_graphicsDevice, builder);
 
     s_v2PsoCount[2] = v2Ps ? ((m_terrainPipelineState->Get() ? 1 : 0) + (m_terrainPipelineStateLEqual->Get() ? 1 : 0)) : 0;
+    s_v2Degraded[2] = v2 && !v2Ps;
     if (v2) Logger::Info("shadingRevision=2: 地形の V2 PSO {} 本", s_v2PsoCount[2]);
 }
 
@@ -1111,7 +1116,7 @@ void AppAccess::UpdateEpicCsm(Application& app)
     // バイアスを下げてよいのは「実際に適用された状態が全面 V2」のときだけ。V2 の .cso が無くて V1 へ縮退した PSO
     // （フォワード / スキンド / 水 / 植生 / VG）が 1 つでも混ざるなら、受光側の法線オフセットが無いのでアクネが出る。
     const bool sceneV2 = (app.m_scene->GetShadingSettings().shadingRevision == 2) && (s_shadingRevApplied == 2)
-        && s_v2PsoCount[0] > 0 && s_v2PsoCount[1] > 0
+        && s_v2PsoCount[0] > 0 && s_v2PsoCount[1] > 0 && !s_v2Degraded[0] && !s_v2Degraded[1] && !s_v2Degraded[2]
         && (!app.m_water || !app.m_water->IsReady() || app.m_water->V2PsoCount() > 0)
         && (!app.m_foliage || !app.m_foliage->ShadingV2Requested() || app.m_foliage->V2PsoCount() > 0 || app.m_foliage->LayerCount() == 0);
     const int rev = sceneV2 ? 2 : 1;
