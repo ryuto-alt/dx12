@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <fstream>
 #include <sstream>
+#include <vector>
 #include <string>
 
 #ifndef DX12E_SOURCE_ROOT
@@ -122,17 +123,48 @@ void Test_ShaderWiring()
     CHECK_MSG(sv2::kFlagMicroShadow == 1u && sv2::kFlagHorizonOcc == 2u && sv2::kFlagGtso == 4u, "C++ 側のビット");
     CHECK_MSG(lighting.find("_clusterReserved[2].x") != std::string::npos, "HLSL は PfSlot::ShadingV2（2 番）を読む");
     CHECK_MSG(static_cast<unsigned>(PfSlot::ShadingV2) == 2u, "PfSlot::ShadingV2 == 2");
-    // V1 を守る: V2 の記述は #ifdef UNO_SHADING_V2 の中だけ（V2 の文字列の直前に開きがある）
+    // V1 を守る: UnoV2 / v2Ao / v2MicroK の使用は、直近の閉じていない #if 系の中に
+    // `#ifdef UNO_SHADING_V2` がある場所だけ（#endif を越えた使用は不合格）。行コメントは見ない。
     for (const std::string* src : {&lighting, &shade})
     {
-        std::size_t pos = 0;
-        while ((pos = src->find("UnoV2", pos)) != std::string::npos)
+        std::vector<bool> stack;   // 各 #if 系ブロックが UNO_SHADING_V2 の中身か
+        int v2Depth = 0;
+        std::istringstream in(*src);
+        std::string line;
+        int uses = 0;
+        while (std::getline(in, line))
         {
-            const std::size_t open = src->rfind("#ifdef UNO_SHADING_V2", pos);
-            // 行頭（コメントを除く）の UnoV2 の使用が、直近の #ifdef UNO_SHADING_V2 より後ろにあることだけ見る
-            CHECK_MSG(open != std::string::npos && open < pos, "UnoV2* の使用が #ifdef UNO_SHADING_V2 より前にある");
-            pos += 5;
+            std::size_t i = line.find_first_not_of(" 	");
+            if (i == std::string::npos) continue;
+            const std::string t = line.substr(i);
+            if (t.rfind("#if", 0) == 0)
+            {
+                const bool isV2 = t.rfind("#ifdef UNO_SHADING_V2", 0) == 0;
+                stack.push_back(isV2);
+                if (isV2) ++v2Depth;
+                continue;
+            }
+            if (t.rfind("#endif", 0) == 0)
+            {
+                if (!stack.empty()) { if (stack.back()) --v2Depth; stack.pop_back(); }
+                continue;
+            }
+            if (t.rfind("#else", 0) == 0 || t.rfind("#elif", 0) == 0)
+            {
+                // V2 の #ifdef の #else 側は V1 の経路。V2 の記述が入ってはいけない
+                if (!stack.empty() && stack.back()) { stack.back() = false; --v2Depth; }
+                continue;
+            }
+            const std::size_t cmt = line.find("//");
+            const std::string code = (cmt == std::string::npos) ? line : line.substr(0, cmt);
+            if (code.find("UnoV2") != std::string::npos || code.find("v2Ao") != std::string::npos ||
+                code.find("v2MicroK") != std::string::npos)
+            {
+                ++uses;
+                CHECK_MSG(v2Depth > 0, "V2 の記述が #ifdef UNO_SHADING_V2 の外にある: %s", code.c_str());
+            }
         }
+        CHECK_MSG(uses > 0, "V2 の使用が 1 件も見つからない（走査の不具合）");
     }
 }
 } // namespace

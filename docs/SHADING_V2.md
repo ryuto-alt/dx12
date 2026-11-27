@@ -134,5 +134,10 @@ C5 は所有範囲に収めるため、既に全消費者の依存表に載っ�
 
 ### 9.6 適用範囲（W1 時点）
 地平線オクルージョンはベース層の `specularIBL` / `probeSpec` だけ。クリアコート層の IBL・プローブ・SSR（`UNO_EXT_COAT` の中）には掛けていないので、法線マップ付きの金属にコートを載せると地平線の下を映すことがある。
-`UnoShadeLighting` を通らない水・植生・地形は V2 の PSO が使われていても C5 は効かない。いずれも PP の範囲外で、必要になったら別項目で足す。
+地形（Terrain / TerrainPhys）・植生（ForwardFoliage）・VG の resolve は `UnoShadeLighting` を通るので、V2 の PSO ではマイクロシャドウ・GTSO・地平線オクルージョンが効く（dxc で V1/V2 の DXIL が異なることを確認済み）。地形の材質 AO はレイヤ AO、植生は材質 AO。水面は通らないので効かない。**この 3 経路（地形・植生・VG）に対する FLIP / 見た目の測定は未実施**（測れているのは lookdev 3 シーンと LS-B のみ）。
+`hasIBL==0`（屋内フォールバック）の例外: 反射プローブの鏡面は GTSO ではなく従来の Lagarde so2 のまま（GTSO は IBL 経路の `so` だけを置き換える）。地平線オクルージョンは `probeSpec` にだけ掛かり、`ambientSpecular` の SSR 部分（`lerp(F0, ssrRgb, ssrConf)`）には掛けていない。
+マイクロシャドウは太陽の `shadow` に掛けるため、植生の逆光透過（`UNO_SHADE_FOLIAGE_TRANSMISSION`）にも同じ |N·L| の減衰が入る（意図はしていないが、許容範囲として残している）。
+V1 の絵が変わらないことは、`shading_v2_math_test` が V2 の記述（`UnoV2*` / `v2Ao` / `v2MicroK`）を `#ifdef UNO_SHADING_V2` の内側だけに限る字句検査で守る（DXIL の hash 比較までは自動化していない。変更時は dxc で V1 の .cso が不変なことを手で確認する）。
+GTSO は解析式（`UnoV2CapsIntersection` を 2 回 = acos 6 回 / V2 画素）。V2 のフォワード GPU 時間は `lookdev_check` の perf（mainScene）で V1 と並べて記録する。予約済みの t40 GTSO LUT に替える余地がある。
+**未達の受け入れ（C5 は完了にしない。C7/C8 は V2 を既定にしない）**: 金属球の地平線漏れ −50%（法線マップ付き金属球のシーンが無い）、GR-1 の凹部 EV ±0.1（`gi_eval` に shadingRevision=2 の条件が無い。NB の依頼）。Epic（DDGI あり）の測定も未実施。
 `shadingFlags`（PfSlot::ShadingV2 の x）を書くのは `shadingv2::PackFlags` だけ。後続項目のビットも必ずそこへ足す。

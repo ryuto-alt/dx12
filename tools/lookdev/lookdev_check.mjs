@@ -13,7 +13,7 @@
 //
 // 使い方:
 //   node tools/lookdev/lookdev_check.mjs [--only a,b] [--out DIR] [--exe PATH] [--port N] [--revisions 1,2]
-//        [--perf-window 120] [--repeat 2] [--v2-max-mean-abs 0.25] [--v2-max-diff-ratio 0.001] [--v2-record-only]
+//        [--perf-window 120] [--repeat 2] [--v2-max-mean-abs 0.25] [--v2-max-diff-ratio 0.001] [--v2-record-only|--v2-gate]
 //        [--reference-dir DIR] [--flip-python PATH] [--no-save-images]
 //        [--pt-reference] [--pt-spp 1024] [--pt-flip-max 0.08] [--pt-max-seconds 120]
 //   --pt-reference: 各シーンをエンジンのパストレーサー（render_reference）で描いて <out>/<シーン>.pt.png / .pt.pfm を作り、
@@ -35,7 +35,7 @@ export function parseLookdevArgs(argv, env = process.env) {
     only: null, exe: findDefaultExe(), port: Number(env.LOOKDEV_PORT) || 0,
     out: path.join(env.USERPROFILE ?? env.HOME ?? ".", "dx12-scorecard", "lookdev"),
     revisions: [1, 2], perfWindow: 120, repeat: 2,
-    v2MaxMeanAbs: 0.25, v2MaxDiffRatio: 0.001, v2RecordOnly: false,
+    v2MaxMeanAbs: 0.25, v2MaxDiffRatio: 0.001, v2RecordOnly: true,
     referenceDir: null, flipPython: null, saveImages: true, help: false,
     ptReference: false, ptSpp: 1024, ptFlipMax: 0.08, ptMaxSeconds: 120,
   };
@@ -52,6 +52,7 @@ export function parseLookdevArgs(argv, env = process.env) {
     else if (k === "--v2-max-mean-abs") a.v2MaxMeanAbs = Number(val());
     else if (k === "--v2-max-diff-ratio") a.v2MaxDiffRatio = Number(val());
     else if (k === "--v2-record-only") a.v2RecordOnly = true;
+    else if (k === "--v2-gate") a.v2RecordOnly = false;   // V2 が V1 と同じ絵であることを合否にしたいとき（C5 以降 V2 は意図して違うので既定は記録のみ）
     else if (k === "--reference-dir") a.referenceDir = path.resolve(val());
     else if (k === "--flip-python") a.flipPython = path.resolve(val());
     else if (k === "--no-save-images") a.saveImages = false;
@@ -282,7 +283,7 @@ if (isMain) {
     console.error("ポートが要る（--port か環境変数 LOOKDEV_PORT。worktree_setup.ps1 が表示した自分のレーンのもの）。他レーンのポートを取らないため、空きの自動選択はしない");
     process.exit(2);
   }
-  if (a.help) { console.log("node tools/lookdev/lookdev_check.mjs [--only a,b] [--out DIR] [--exe PATH] [--port N] [--revisions 1,2] [--v2-record-only] [--pt-reference] ..."); process.exit(0); }
+  if (a.help) { console.log("node tools/lookdev/lookdev_check.mjs [--only a,b] [--out DIR] [--exe PATH] [--port N] [--revisions 1,2] [--v2-record-only|--v2-gate] [--pt-reference] ..."); process.exit(0); }
   runLookdev(a).then((r) => {
     for (const s of r.scenes) {
       const v = s.revisions;
