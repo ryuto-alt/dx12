@@ -1291,14 +1291,14 @@ void T_ShadingRevisionAppliedInRunLoop(ImGuiTestContext* ctx)
     IM_CHECK(app && app->GetScene());
     auto& sh = app->GetScene()->GetShadingSettings();
     const u8 prev = sh.shadingRevision;
-    int applied = 0, a = 0, b = 0, c = 0;
+    int applied = 0, a = 0, b = 0, c = 0, w = 0, f = 0, v = 0;   // FU-E-25: 水 / 植生 / 仮想ジオメトリの本数（ここでは見ない）
     sh.shadingRevision = 2;
     ctx->Yield(3);
-    AppAccess::QueryShadingPsos(*app, applied, a, b, c);
+    AppAccess::QueryShadingPsos(*app, applied, a, b, c, w, f, v);
     IM_CHECK_EQ(applied, 2);
     sh.shadingRevision = 1;
     ctx->Yield(3);
-    AppAccess::QueryShadingPsos(*app, applied, a, b, c);
+    AppAccess::QueryShadingPsos(*app, applied, a, b, c, w, f, v);
     IM_CHECK_EQ(applied, 1);
     sh.shadingRevision = prev;
     ctx->Yield(3);
